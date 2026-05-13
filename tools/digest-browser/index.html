@@ -63,6 +63,7 @@
       Choose .md files
       <input type="file" id="file-input" multiple accept=".md,text/markdown,text/plain">
     </label>
+    <button type="button" id="clear-all-btn">Clear all</button>
     <input type="search" id="search-input" placeholder="Search (case-insensitive)..." autocomplete="off">
     <label for="project-select">Project:</label>
     <select id="project-select">
@@ -90,16 +91,18 @@
   const NO_TAG = '(no-tag)';
 
   const appState = {
-    digests: [],         // all parsed digest objects
+    digestMap: new Map(), // sid -> digest (single source of truth; latest-wins on set)
+    digests: [],         // derived from digestMap.values(), sorted desc; read by downstream
     filtered: [],        // after project + search filter
     page: 1,             // 1-indexed
     projectFilter: ALL_PROJECTS,
     searchQuery: '',
-    filesLoaded: 0,
+    filesLoaded: 0,      // cumulative count of successfully-read files
   };
 
   // ============ DOM refs ============
   const $fileInput = document.getElementById('file-input');
+  const $clearBtn = document.getElementById('clear-all-btn');
   const $search = document.getElementById('search-input');
   const $projectSel = document.getElementById('project-select');
   const $counts = document.getElementById('counts');
@@ -323,6 +326,12 @@
     });
   }
 
+  // Sync derived digests array from the digestMap source of truth.
+  function syncDigestsFromMap() {
+    appState.digests = Array.from(appState.digestMap.values());
+    sortDigestsDesc(appState.digests);
+  }
+
   // ============ Project dropdown ============
   function rebuildProjectOptions() {
     const tags = {};
@@ -536,17 +545,37 @@
   function finishLoad(texts, anyError) {
     const merged = texts.filter(Boolean).join('\n');
     const parsed = splitDigests(merged);
-    sortDigestsDesc(parsed);
-    appState.digests = parsed;
-    appState.filesLoaded = texts.filter(Boolean).length;
+    // Accumulate + dedup by sid (latest-wins). Map.set overwrite is the dedup primitive.
+    parsed.forEach(function (d) { appState.digestMap.set(d.sid, d); });
+    syncDigestsFromMap();
+    appState.filesLoaded += texts.filter(Boolean).length;
     appState.page = 1;
-    // Reset filters? Keep current selections but rebuild list of projects.
     rebuildProjectOptions();
     recomputeFiltered();
     if (parsed.length === 0) {
       showError('No digest entries detected (no lines starting with "### " were found).');
     }
     $hint.hidden = true;
+    renderAll();
+  }
+
+  function clearAll() {
+    // Preserve search input / project dropdown selection (AC-N9).
+    const prevProject = appState.projectFilter;
+    appState.digestMap.clear();
+    appState.digests = [];
+    appState.filtered = [];
+    appState.filesLoaded = 0;
+    appState.page = 1;
+    // Rebuild dropdown (will collapse to only "(all)" since digests is empty).
+    rebuildProjectOptions();
+    // Force-restore prior projectFilter even if option no longer exists
+    // (browser will still keep select.value-equivalent state via appState).
+    appState.projectFilter = prevProject;
+    try { $projectSel.value = prevProject; } catch (_e) { /* ignore */ }
+    recomputeFiltered();
+    $hint.hidden = false;
+    clearError();
     renderAll();
   }
 
@@ -600,7 +629,11 @@
   // ============ Wiring ============
   $fileInput.addEventListener('change', function () {
     handleFiles($fileInput.files);
+    // Reset so the same file can be re-selected (Chrome won't re-fire change otherwise). Supports AC-N5.
+    $fileInput.value = '';
   });
+
+  $clearBtn.addEventListener('click', clearAll);
 
   $search.addEventListener('input', function () {
     appState.searchQuery = $search.value || '';
