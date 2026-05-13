@@ -12,3 +12,6 @@ Desktop.ini
 .idea/
 *.swp
 *~
+
+# Local git worktrees
+.worktrees/
