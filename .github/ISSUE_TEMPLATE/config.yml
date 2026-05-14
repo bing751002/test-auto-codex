@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Agent Kanban Runner 使用說明
+    url: https://github.com/bing751002/test-auto-codex#github-issue-runner-%E8%A9%A6%E9%A9%97
+    about: 查看 runner、/bot、/allow-push 的使用方式。

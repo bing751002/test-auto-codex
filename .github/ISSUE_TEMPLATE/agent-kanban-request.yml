@@ -1,0 +1,65 @@
+name: Agent Kanban Request
+description: 交給公司電腦上的 Codex issue runner 處理
+title: "[agent-kanban] "
+labels:
+  - agent-kanban
+body:
+  - type: markdown
+    attributes:
+      value: |
+        請用這個模板建立要交給 Codex runner 的需求。
+
+        多台電腦同時跑 runner 時，請在「目標 runner」指定 `/bot <runner-id>`。
+        這台公司電腦目前使用：
+
+        ```text
+        /bot LAPTOP-2PECR7ML
+        ```
+
+  - type: textarea
+    id: runner
+    attributes:
+      label: 目標 runner
+      description: 指定哪台電腦處理。沒有指定時，任何 runner 都可以接。
+      value: |
+        /bot LAPTOP-2PECR7ML
+    validations:
+      required: false
+
+  - type: textarea
+    id: request
+    attributes:
+      label: 需求內容
+      description: 說明你要 Codex 做什麼。
+      placeholder: 例如：新增一個靜態 welcome page，放在 tools/test-page/index.html。
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 驗收標準
+      description: 列出完成後要符合的條件。
+      value: |
+        - [ ] 
+        - [ ] 
+    validations:
+      required: true
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: 限制與補充
+      description: 寫明不要做的事、指定路徑、測試要求、風格要求等。
+      placeholder: 例如：不要使用外部 CDN；必須能直接用瀏覽器開啟。
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: git_push
+    attributes:
+      label: Git 上傳授權
+      description: 勾選後，issue body 會包含 `/allow-push`，runner 會允許 Codex commit 並 push。
+      options:
+        - label: "/allow-push - 完成後允許 Codex commit 並 push / 上傳 git"
+          required: false
