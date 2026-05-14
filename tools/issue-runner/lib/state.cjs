@@ -6,7 +6,7 @@ function readState(statePath) {
     return { version: 1, issues: {} };
   }
 
-  return JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  return JSON.parse(stripBom(fs.readFileSync(statePath, 'utf8')));
 }
 
 function writeState(statePath, state) {
@@ -16,3 +16,7 @@ function writeState(statePath, state) {
 }
 
 module.exports = { readState, writeState };
+
+function stripBom(value) {
+  return value.charCodeAt(0) === 0xFEFF ? value.slice(1) : value;
+}

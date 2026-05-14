@@ -42,7 +42,7 @@ function createCodexExecutor(config) {
       fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
       const child = spawnSync(
-        'codex',
+        codexCommand(),
         [
           'exec',
           '--cd',
@@ -66,15 +66,16 @@ function createCodexExecutor(config) {
       const stdout = child.stdout || '';
       const stderr = child.stderr || '';
       const finalMessage = fs.existsSync(outputPath) ? fs.readFileSync(outputPath, 'utf8') : '';
-      const ok = child.status === 0;
+      const ok = !child.error && child.status === 0;
 
       return {
         ok,
         mode: 'codex',
         exitCode: child.status,
+        error: child.error ? child.error.message : '',
         promptPath: relative(promptPath),
         outputPath: relative(outputPath),
-        summary: formatCodexSummary({ ok, stdout, stderr, finalMessage, outputPath })
+        summary: formatCodexSummary({ ok, stdout, stderr, finalMessage, outputPath, error: child.error })
       };
     }
   };
@@ -103,12 +104,20 @@ function writePrompt(requestsDir, issue) {
   return promptPath;
 }
 
-function formatCodexSummary({ ok, stdout, stderr, finalMessage, outputPath }) {
+function codexCommand() {
+  return process.platform === 'win32' ? 'codex.cmd' : 'codex';
+}
+
+function formatCodexSummary({ ok, stdout, stderr, finalMessage, outputPath, error }) {
   const lines = [
     ok ? 'Codex execution completed.' : 'Codex execution failed.',
     '',
     `Final message file: ${relative(outputPath)}`
   ];
+
+  if (error) {
+    lines.push('', '## spawn error', error.message);
+  }
 
   if (finalMessage.trim()) {
     lines.push('', '## Final Message', finalMessage.trim());
