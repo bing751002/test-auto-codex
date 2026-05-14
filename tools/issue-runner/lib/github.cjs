@@ -86,7 +86,8 @@ function bindRepo(client, repo) {
 function gh(args) {
   return execFileSync('gh', args, {
     encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: Number(process.env.ISSUE_RUNNER_GH_TIMEOUT_MS || 45 * 1000)
   });
 }
 
