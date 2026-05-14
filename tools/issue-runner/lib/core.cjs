@@ -6,7 +6,9 @@ async function pollIssues({ github, repo, label, state, executor, execute = fals
     if (!isAssignedToRunner(issue, runnerId)) continue;
 
     const key = String(issue.number);
+    const comments = await github.listComments(issue.number);
     if (!nextState.issues[key]) {
+      const alreadyReceived = hasAgentStatus(comments, 'received');
       nextState.issues[key] = {
         status: 'received',
         title: issue.title,
@@ -17,20 +19,22 @@ async function pollIssues({ github, repo, label, state, executor, execute = fals
         acknowledgedAnswerCommentIds: []
       };
 
-      await github.commentIssue(
-        issue.number,
-        [
-          '[agent-kanban] status: received',
-          '',
-          '已收到此需求。公司電腦上的 issue runner 已建立本機追蹤狀態。',
-          '',
-          '後續如果需要你補充資訊，runner 會在同一個 issue 留下 `[agent-kanban] needs-input`。'
-        ].join('\n')
-      );
+      if (!alreadyReceived) {
+        await github.commentIssue(
+          issue.number,
+          [
+            '[agent-kanban] status: received',
+            '',
+            '已收到此需求。公司電腦上的 issue runner 已建立本機追蹤狀態。',
+            '',
+            '後續如果需要你補充資訊，runner 會在同一個 issue 留下 `[agent-kanban] needs-input`。'
+          ].join('\n')
+        );
+      }
     }
 
     nextState.issues[key].allowPush = nextState.issues[key].allowPush || hasPushAuthorization(issue);
-    await recordAnswers({ github, issue, issueState: nextState.issues[key] });
+    await recordAnswers({ github, issue, issueState: nextState.issues[key], comments });
     if (execute) {
       await executeIssue({ github, issue, issueState: nextState.issues[key], executor });
     }
@@ -86,8 +90,7 @@ async function executeIssue({ github, issue, issueState, executor }) {
   }
 }
 
-async function recordAnswers({ github, issue, issueState }) {
-  const comments = await github.listComments(issue.number);
+async function recordAnswers({ github, issue, issueState, comments }) {
   const acknowledged = new Set(issueState.acknowledgedAnswerCommentIds || []);
   issueState.answers = issueState.answers || {};
 
@@ -154,6 +157,11 @@ function extractBotDirective(text) {
 function hasPushAuthorization(issue) {
   const text = `${issue.title || ''}\n${issue.body || ''}`;
   return /\/allow-push\b|commit\s*並\s*push|commit\s+and\s+push|上傳\s*git|推送\s*git|git\s*push/i.test(text);
+}
+
+function hasAgentStatus(comments, status) {
+  const pattern = new RegExp(`^\\[agent-kanban\\]\\s+status:\\s+${status}\\b`, 'i');
+  return comments.some((comment) => pattern.test(String(comment.body || '').trim()));
 }
 
 function isAnswerComment({ body, comment, issueState }) {

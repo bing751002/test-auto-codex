@@ -1,6 +1,7 @@
 param(
   [string]$TaskName = 'AgentKanbanIssueRunner',
   [int]$IntervalMinutes = 1,
+  [int]$ExecutionLimitMinutes = 120,
   [ValidateSet('dry-run', 'codex')]
   [string]$ExecMode = 'dry-run',
   [string]$RunnerId = $env:COMPUTERNAME
@@ -36,7 +37,7 @@ $Settings = New-ScheduledTaskSettingsSet `
   -DontStopIfGoingOnBatteries `
   -MultipleInstances IgnoreNew `
   -StartWhenAvailable `
-  -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+  -ExecutionTimeLimit (New-TimeSpan -Minutes $ExecutionLimitMinutes)
 
 Register-ScheduledTask `
   -TaskName $TaskName `
@@ -46,6 +47,6 @@ Register-ScheduledTask `
   -Description 'Poll GitHub issues for agent-kanban requests.' `
   -Force | Out-Null
 
-Write-Host "OK: installed scheduled task $TaskName every $IntervalMinutes minute(s), exec mode: $ExecMode, runner id: $RunnerId"
+Write-Host "OK: installed scheduled task $TaskName every $IntervalMinutes minute(s), exec mode: $ExecMode, runner id: $RunnerId, execution limit: $ExecutionLimitMinutes minute(s)"
 Write-Host "Run now:"
 Write-Host "  Start-ScheduledTask -TaskName $TaskName"

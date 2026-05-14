@@ -330,3 +330,48 @@ test('pollIssues passes allowPush to executor when issue explicitly authorizes g
 
   assert.deepEqual(seen, [true]);
 });
+
+test('pollIssues does not duplicate received comment when issue already has runner receipt', async () => {
+  const posted = [];
+  const executed = [];
+  const github = {
+    listIssues: async () => [
+      {
+        number: 10,
+        title: 'Already received',
+        body: '/bot office-pc\nBuild this.',
+        url: 'https://github.com/example/repo/issues/10'
+      }
+    ],
+    listComments: async () => [
+      {
+        id: 1001,
+        body: '[agent-kanban] status: received\n\n已收到此需求。',
+        author: { login: 'bing751002' },
+        createdAt: '2026-05-14T00:00:00Z'
+      }
+    ],
+    commentIssue: async (number, body) => posted.push({ number, body })
+  };
+  const executor = {
+    run: async (issue) => {
+      executed.push(issue.number);
+      return { ok: true, summary: 'done' };
+    }
+  };
+
+  const result = await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    runnerId: 'office-pc',
+    state: { issues: {} },
+    execute: true
+  });
+
+  assert.deepEqual(executed, [10]);
+  assert.equal(result.state.issues['10'].status, 'completed');
+  assert.equal(posted.some((item) => /\[agent-kanban\] status: received/.test(item.body)), false);
+  assert.equal(posted.some((item) => /\[agent-kanban\] status: running/.test(item.body)), true);
+});

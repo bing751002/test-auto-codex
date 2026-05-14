@@ -115,7 +115,7 @@ node tools/issue-runner/runner.cjs poll
 若要在公司電腦自動輪詢 issue，可安裝 Windows 工作排程：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools/issue-runner/install-scheduled-task.ps1 -ExecMode codex -RunnerId LAPTOP-2PECR7ML
+powershell -ExecutionPolicy Bypass -File tools/issue-runner/install-scheduled-task.ps1 -ExecMode codex -RunnerId LAPTOP-2PECR7ML -ExecutionLimitMinutes 120
 ```
 
 手動觸發一次：
@@ -138,6 +138,8 @@ node tools/issue-runner/runner.cjs poll --exec-mode dry-run
 ```
 
 排程透過 `wscript.exe` 背景啟動 `run-hidden.vbs`，再由 wrapper 以 hidden PowerShell 執行 `run-once.ps1`，避免每次 poll 跳出黑色 console 視窗。log 會寫到 `.runner/logs/`。
+
+排程保留 `ExecutionLimitMinutes` 是為了避免 Codex 或 git 命令卡死後永遠佔用背景工作。預設 120 分鐘；`run-once.ps1` 另有 `.runner/issue-runner.lock` 防止上一輪還在跑時下一輪重入。
 
 `dry-run` 是預設安全模式：runner 會把 issue 轉成 `.runner/requests/issue-<number>.md`，並在 issue 回覆 completed，但不會真的呼叫 Codex。
 
