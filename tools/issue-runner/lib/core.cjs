@@ -50,7 +50,7 @@ async function executeIssue({ github, issue, issueState, executor }) {
   );
 
   try {
-    const result = await executor.run(issue);
+    const result = await executor.run(issue, issueState);
     issueState.finishedAt = new Date().toISOString();
     issueState.lastRun = result;
     issueState.status = statusForResult(result);
@@ -88,7 +88,7 @@ async function recordAnswers({ github, issue, issueState }) {
 
   for (const comment of comments) {
     const body = String(comment.body || '').trim();
-    if (!body.startsWith('/answer')) continue;
+    if (!isAnswerComment({ body, comment, issueState })) continue;
 
     issueState.answers[String(comment.id)] = {
       body,
@@ -109,6 +109,9 @@ async function recordAnswers({ github, issue, issueState }) {
     }
   }
 
+  if (issueState.status === 'needs-input' && acknowledged.size > (issueState.acknowledgedAnswerCommentIds || []).length) {
+    issueState.status = 'received';
+  }
   issueState.acknowledgedAnswerCommentIds = [...acknowledged].sort((a, b) => a - b);
 }
 
@@ -129,6 +132,14 @@ function statusForResult(result) {
   if (!result.ok) return 'failed';
   if (result.needsInput) return 'needs-input';
   return 'completed';
+}
+
+function isAnswerComment({ body, comment, issueState }) {
+  if (!body || body.startsWith('[agent-kanban]')) return false;
+  if (body.startsWith('/answer')) return true;
+  if (issueState.status !== 'needs-input') return false;
+  if (!issueState.finishedAt || !comment.createdAt) return true;
+  return new Date(comment.createdAt).getTime() > new Date(issueState.finishedAt).getTime();
 }
 
 module.exports = { pollIssues };

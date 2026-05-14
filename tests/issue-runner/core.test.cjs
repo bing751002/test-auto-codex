@@ -199,3 +199,56 @@ test('pollIssues reports needs-input when executor asks the user a question', as
   assert.equal(result.state.issues['5'].lastRun.needsInput, true);
   assert.match(posted.map((item) => item.body).join('\n'), /\[agent-kanban\] needs-input/);
 });
+
+test('pollIssues resumes needs-input issues from plain user comments', async () => {
+  const posted = [];
+  const executed = [];
+  const github = {
+    listIssues: async () => [
+      {
+        number: 6,
+        title: 'Continue from answer',
+        body: 'Build a page.',
+        url: 'https://github.com/example/repo/issues/6'
+      }
+    ],
+    listComments: async () => [
+      {
+        id: 601,
+        body: '新增獨立靜態頁，能用瀏覽器開啟',
+        author: { login: 'bing751002' },
+        createdAt: '2026-05-14T00:05:00Z'
+      }
+    ],
+    commentIssue: async (number, body) => posted.push({ number, body })
+  };
+  const executor = {
+    run: async (issue, issueState) => {
+      executed.push(issueState.answers['601'].body);
+      return { ok: true, summary: 'Implemented.' };
+    }
+  };
+  const state = {
+    issues: {
+      6: {
+        status: 'needs-input',
+        finishedAt: '2026-05-14T00:00:00Z',
+        answers: {},
+        acknowledgedAnswerCommentIds: []
+      }
+    }
+  };
+
+  const result = await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    state,
+    execute: true
+  });
+
+  assert.deepEqual(executed, ['新增獨立靜態頁，能用瀏覽器開啟']);
+  assert.equal(result.state.issues['6'].status, 'completed');
+  assert.match(posted.map((item) => item.body).join('\n'), /\[agent-kanban\] answer-received/);
+});

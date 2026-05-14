@@ -12,8 +12,8 @@ function createExecutor(config) {
 
 function createDryRunExecutor(config) {
   return {
-    run: async (issue) => {
-      const promptPath = writePrompt(config.requestsDir, issue);
+    run: async (issue, issueState) => {
+      const promptPath = writePrompt(config.requestsDir, issue, issueState);
       return {
         ok: true,
         mode: 'dry-run',
@@ -36,8 +36,8 @@ function createDryRunExecutor(config) {
 
 function createCodexExecutor(config) {
   return {
-    run: async (issue) => {
-      const promptPath = writePrompt(config.requestsDir, issue);
+    run: async (issue, issueState) => {
+      const promptPath = writePrompt(config.requestsDir, issue, issueState);
       const outputPath = path.join(config.runsDir, `issue-${issue.number}-last-message.md`);
       fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
@@ -88,7 +88,7 @@ function detectNeedsInput(finalMessage) {
   return /需要確認|需要你|請回覆|請提供|請補充|無法判斷/.test(text);
 }
 
-function writePrompt(requestsDir, issue) {
+function writePrompt(requestsDir, issue, issueState = {}) {
   fs.mkdirSync(requestsDir, { recursive: true });
   const promptPath = path.join(requestsDir, `issue-${issue.number}.md`);
   const body = issue.body || '';
@@ -100,6 +100,9 @@ function writePrompt(requestsDir, issue) {
     '## 使用者需求',
     body.trim() || '(issue body is empty)',
     '',
+    '## 後續回覆',
+    formatAnswers(issueState.answers),
+    '',
     '## 執行規則',
     '- 使用繁體中文回覆。',
     '- 先檢查 repo 現況，再決定下一步。',
@@ -109,6 +112,14 @@ function writePrompt(requestsDir, issue) {
   ].join('\n');
   fs.writeFileSync(promptPath, `${prompt}\n`, 'utf8');
   return promptPath;
+}
+
+function formatAnswers(answers = {}) {
+  const entries = Object.entries(answers);
+  if (entries.length === 0) return '(no follow-up comments recorded)';
+  return entries
+    .map(([id, answer]) => `- comment ${id} by ${answer.author || 'unknown'}: ${answer.body}`)
+    .join('\n');
 }
 
 function codexCommand() {
