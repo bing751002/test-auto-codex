@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { EventEmitter } = require('node:events');
+const { Writable } = require('node:stream');
 const { createExecutor } = require('../../tools/issue-runner/lib/executor.cjs');
 
 test('dry-run executor writes resolved project details into prompt', async () => {
@@ -32,4 +34,145 @@ test('dry-run executor writes resolved project details into prompt', async () =>
   assert.match(prompt, /## 執行專案/);
   assert.match(prompt, /name: customer-api/);
   assert.match(prompt, /path: D:\\work\\customer-api/);
+});
+
+function createFakeChild({ stdout = '', stderr = '', exitCode = 0, signal = null, errorAfterMs = null, exitAfterMs = 10, pid = 12345 }) {
+  const child = new EventEmitter();
+  child.pid = pid;
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.stdin = new Writable({ write(_chunk, _enc, cb) { cb(); } });
+  child.killed = false;
+  child.kill = (sig) => {
+    child.killed = true;
+    setImmediate(() => {
+      child.emit('close', null, sig || 'SIGTERM');
+    });
+  };
+  setTimeout(() => {
+    if (errorAfterMs != null) {
+      child.emit('error', new Error('spawn ENOENT'));
+      return;
+    }
+    if (stdout) child.stdout.emit('data', Buffer.from(stdout));
+    if (stderr) child.stderr.emit('data', Buffer.from(stderr));
+    setTimeout(() => {
+      if (!child.killed) child.emit('close', exitCode, signal);
+    }, exitAfterMs);
+  }, 1);
+  return child;
+}
+
+test('codex executor returns ok=true on exit code 0 and writes prompt + log', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-runner-codex-'));
+  const requestsDir = path.join(tempRoot, 'requests');
+  const runsDir = path.join(tempRoot, 'runs');
+  const capturedPids = [];
+
+  const fakeSpawn = (cmd, args, opts) => {
+    fs.mkdirSync(runsDir, { recursive: true });
+    const outputArg = args[args.indexOf('--output-last-message') + 1];
+    fs.writeFileSync(outputArg, '已完成需求並驗證通過。', 'utf8');
+    return createFakeChild({ stdout: 'codex log line\n', exitCode: 0 });
+  };
+
+  const executor = createExecutor({
+    execMode: 'codex',
+    projectRoot: tempRoot,
+    requestsDir,
+    runsDir,
+    sandbox: 'workspace-write',
+    timeoutMs: 5000,
+    spawn: fakeSpawn,
+    onChildPid: (pid) => capturedPids.push(pid)
+  });
+
+  const result = await executor.run(
+    { number: 100, title: 'happy', body: '', url: 'u' },
+    { project: { name: 'p', path: tempRoot }, answers: {}, allowPush: false }
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.timedOut, false);
+  assert.equal(result.mode, 'codex');
+  assert.deepEqual(capturedPids, [12345]);
+  assert.ok(fs.existsSync(path.join(runsDir, 'issue-100.log')));
+  const log = fs.readFileSync(path.join(runsDir, 'issue-100.log'), 'utf8');
+  assert.match(log, /codex log line/);
+});
+
+test('codex executor reports failure when child exits non-zero', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-runner-codex-fail-'));
+  const fakeSpawn = () => createFakeChild({ stderr: 'oops something broke', exitCode: 1 });
+
+  const executor = createExecutor({
+    execMode: 'codex',
+    projectRoot: tempRoot,
+    requestsDir: path.join(tempRoot, 'requests'),
+    runsDir: path.join(tempRoot, 'runs'),
+    sandbox: 'workspace-write',
+    timeoutMs: 5000,
+    spawn: fakeSpawn
+  });
+
+  const result = await executor.run(
+    { number: 101, title: 'fail', body: '', url: 'u' },
+    { project: { name: 'p', path: tempRoot }, answers: {} }
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.exitCode, 1);
+  assert.match(result.summary, /Codex execution failed/);
+  assert.match(result.summary, /oops something broke/);
+});
+
+test('codex executor kills child after timeoutMs and reports timedOut', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-runner-codex-timeout-'));
+  const fakeSpawn = () => createFakeChild({ exitAfterMs: 5000 });
+
+  const executor = createExecutor({
+    execMode: 'codex',
+    projectRoot: tempRoot,
+    requestsDir: path.join(tempRoot, 'requests'),
+    runsDir: path.join(tempRoot, 'runs'),
+    sandbox: 'workspace-write',
+    timeoutMs: 50,
+    spawn: fakeSpawn
+  });
+
+  const result = await executor.run(
+    { number: 102, title: 'slow', body: '', url: 'u' },
+    { project: { name: 'p', path: tempRoot }, answers: {} }
+  );
+
+  assert.equal(result.timedOut, true);
+  assert.equal(result.ok, false);
+  assert.match(result.summary, /Codex execution timed out/);
+  assert.match(result.error, /timed out after 50ms/);
+});
+
+test('codex executor captures spawn error when command cannot launch', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-runner-codex-spawn-err-'));
+  const fakeSpawn = () => {
+    throw Object.assign(new Error('spawn codex ENOENT'), { code: 'ENOENT' });
+  };
+
+  const executor = createExecutor({
+    execMode: 'codex',
+    projectRoot: tempRoot,
+    requestsDir: path.join(tempRoot, 'requests'),
+    runsDir: path.join(tempRoot, 'runs'),
+    sandbox: 'workspace-write',
+    timeoutMs: 5000,
+    spawn: fakeSpawn
+  });
+
+  const result = await executor.run(
+    { number: 103, title: 'no-codex', body: '', url: 'u' },
+    { project: { name: 'p', path: tempRoot }, answers: {} }
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /ENOENT/);
 });

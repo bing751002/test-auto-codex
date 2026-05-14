@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 
 function createExecutor(config) {
   const mode = config.execMode || 'dry-run';
@@ -24,7 +24,7 @@ function createDryRunExecutor(config) {
           '',
           `Prompt file: ${relative(promptPath)}`,
           '',
-          '若要真正執行 Codex，請把 runner exec mode 設為 codex。'
+          '若要啟用實際 Codex 執行，請將 runner exec mode 設為 codex。'
         ].join('\n')
       };
     }
@@ -32,58 +32,175 @@ function createDryRunExecutor(config) {
 }
 
 function createCodexExecutor(config) {
+  const spawnImpl = config.spawn || spawn;
   return {
     run: async (issue, issueState) => {
       const projectRoot = issueState.project?.path || config.projectRoot;
       const promptPath = writePrompt(config.requestsDir, issue, issueState, projectRoot);
       const outputPath = path.join(config.runsDir, `issue-${issue.number}-last-message.md`);
+      const logPath = path.join(config.runsDir, `issue-${issue.number}.log`);
       fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
-      const child = spawnSync(
-        codexCommand(),
-        [
-          '--ask-for-approval',
-          'never',
-          'exec',
-          '--cd',
-          projectRoot,
-          '--sandbox',
-          config.sandbox,
-          '--output-last-message',
-          outputPath,
-          '-'
-        ],
-        {
-          input: fs.readFileSync(promptPath, 'utf8'),
-          encoding: 'utf8',
-          cwd: projectRoot,
-          timeout: config.timeoutMs,
-          shell: process.platform === 'win32'
-        }
-      );
+      const prompt = fs.readFileSync(promptPath, 'utf8');
+      const args = [
+        '--ask-for-approval', 'never',
+        'exec',
+        '--cd', projectRoot,
+        '--sandbox', config.sandbox,
+        '--output-last-message', outputPath,
+        '-'
+      ];
 
-      const stdout = child.stdout || '';
-      const stderr = child.stderr || '';
+      const result = await runChildProcess({
+        spawnImpl,
+        command: codexCommand(),
+        args,
+        cwd: projectRoot,
+        input: prompt,
+        timeoutMs: config.timeoutMs,
+        logPath,
+        onPid: (pid) => {
+          if (typeof config.onChildPid === 'function') config.onChildPid(pid);
+        }
+      });
+
       const finalMessage = fs.existsSync(outputPath) ? fs.readFileSync(outputPath, 'utf8') : '';
-      const ok = !child.error && child.status === 0;
+      const ok = !result.spawnError && !result.timedOut && result.exitCode === 0;
+      const error = result.spawnError
+        ? result.spawnError.message
+        : result.timedOut
+          ? `timed out after ${config.timeoutMs}ms`
+          : '';
 
       return {
         ok,
         needsInput: detectNeedsInput(finalMessage),
         mode: 'codex',
-        exitCode: child.status,
-        error: child.error ? child.error.message : '',
+        exitCode: result.exitCode,
+        signal: result.signal,
+        timedOut: result.timedOut,
+        pid: result.pid,
+        error,
         promptPath: relative(promptPath),
         outputPath: relative(outputPath),
-        summary: formatCodexSummary({ ok, stdout, stderr, finalMessage, outputPath, error: child.error })
+        logPath: relative(logPath),
+        summary: formatCodexSummary({
+          ok,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          finalMessage,
+          outputPath,
+          error,
+          timedOut: result.timedOut
+        })
       };
     }
   };
 }
 
+function runChildProcess({ spawnImpl, command, args, cwd, input, timeoutMs, logPath, onPid }) {
+  return new Promise((resolve) => {
+    let logStream = null;
+    if (logPath) {
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+      logStream = fs.createWriteStream(logPath, { flags: 'a' });
+      logStream.write(`[${new Date().toISOString()}] spawn ${command} ${args.join(' ')}\n`);
+    }
+
+    let child;
+    try {
+      child = spawnImpl(command, args, {
+        cwd,
+        shell: process.platform === 'win32',
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+    } catch (spawnError) {
+      if (logStream) {
+        logStream.write(`[spawn error] ${spawnError.message}\n`);
+        logStream.end();
+      }
+      resolve({
+        spawnError,
+        timedOut: false,
+        exitCode: null,
+        signal: '',
+        pid: 0,
+        stdout: '',
+        stderr: ''
+      });
+      return;
+    }
+
+    if (onPid && child.pid) onPid(child.pid);
+
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let spawnError = null;
+    let timeoutHandle = null;
+    let killHandle = null;
+
+    child.stdout?.on('data', (chunk) => {
+      const text = chunk.toString('utf8');
+      stdout += text;
+      if (logStream) logStream.write(text);
+    });
+    child.stderr?.on('data', (chunk) => {
+      const text = chunk.toString('utf8');
+      stderr += text;
+      if (logStream) logStream.write(`[stderr] ${text}`);
+    });
+    child.on('error', (err) => {
+      spawnError = err;
+      if (logStream) logStream.write(`[error] ${err.message}\n`);
+    });
+
+    if (timeoutMs && timeoutMs > 0) {
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        if (logStream) {
+          logStream.write(`[${new Date().toISOString()}] timeout ${timeoutMs}ms, sending SIGTERM to pid ${child.pid}\n`);
+        }
+        try { child.kill('SIGTERM'); } catch {}
+        killHandle = setTimeout(() => {
+          try { child.kill('SIGKILL'); } catch {}
+        }, 5000);
+        killHandle.unref();
+      }, timeoutMs);
+      timeoutHandle.unref();
+    }
+
+    child.on('close', (code, signal) => {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (killHandle) clearTimeout(killHandle);
+      if (logStream) {
+        logStream.write(`[${new Date().toISOString()}] close code=${code} signal=${signal || ''}\n`);
+        logStream.end();
+      }
+      resolve({
+        spawnError,
+        timedOut,
+        exitCode: code,
+        signal: signal || '',
+        pid: child.pid || 0,
+        stdout,
+        stderr
+      });
+    });
+
+    if (child.stdin) {
+      child.stdin.on('error', (err) => {
+        if (logStream) logStream.write(`[stdin error] ${err.message}\n`);
+      });
+      if (input != null) child.stdin.write(input);
+      child.stdin.end();
+    }
+  });
+}
+
 function detectNeedsInput(finalMessage) {
   const text = String(finalMessage || '');
-  return /需要確認|需要你|請回覆|請提供|請補充|無法判斷|need(s)? input|need(s)? clarification/i.test(text);
+  return /需要你|需要使用者|需要補充|無法判斷|needs? input|needs? clarification/i.test(text);
 }
 
 function writePrompt(requestsDir, issue, issueState = {}, projectRoot = '') {
@@ -103,28 +220,28 @@ function writePrompt(requestsDir, issue, issueState = {}, projectRoot = '') {
       ? [`- name: ${issueState.project.name}`, `- path: ${issueState.project.path}`].join('\n')
       : [`- name: default`, `- path: ${projectRoot || process.cwd()}`].join('\n'),
     '',
-    '## 後續回覆',
+    '## 既有回覆',
     formatAnswers(issueState.answers),
     '',
     '## Git 權限',
     issueState.allowPush
       ? [
-          '- 使用者已明確授權 commit 並 push。',
-          '- 你可以在完成並驗證後執行 `git add`、`git commit`、`git push`。',
-          '- commit message 請簡短描述變更，並提到 issue 編號。'
+          '- 使用者已允許這次任務 commit 並 push。',
+          '- 如果你完成了可提交的修改，請自行執行 `git add`、`git commit`、`git push`。',
+          '- commit message 請清楚描述變更並包含 issue 編號。'
         ].join('\n')
       : [
-          '- 使用者尚未明確授權 commit/push。',
-          '- 可以修改工作樹並驗證，但不要 commit、不要 push。',
-          '- 完成後回報未提交檔案與驗證結果。'
+          '- 使用者尚未允許這次任務 commit/push。',
+          '- 可以修改本機檔案與執行測試，但不要 commit，也不要 push。',
+          '- 最後請回報修改內容與驗證結果。'
         ].join('\n'),
     '',
     '## 執行規則',
-    '- 使用繁體中文回覆。',
-    '- 先檢查 repo 現況，再決定下一步。',
-    '- 若需求不清楚，只產出需要詢問使用者的問題，不要猜測實作。',
-    '- 除非 Git 權限段落明確允許，不要 push。',
-    '- 完成後摘要改動、驗證結果與仍需使用者處理的事項。'
+    '- 使用繁體中文回覆使用者。',
+    '- 先理解 repo 現況，再進行修改。',
+    '- 如果遇到可以自行處理的問題，請自行修正並繼續。',
+    '- 只有在缺少必要需求、權限或外部資訊時，才在 issue 回覆需要使用者補充。',
+    '- 最後請清楚列出完成內容、驗證方式與任何未完成風險。'
   ].join('\n');
   fs.writeFileSync(promptPath, `${prompt}\n`, 'utf8');
   return promptPath;
@@ -142,15 +259,19 @@ function codexCommand() {
   return process.platform === 'win32' ? 'codex.cmd' : 'codex';
 }
 
-function formatCodexSummary({ ok, stdout, stderr, finalMessage, outputPath, error }) {
+function formatCodexSummary({ ok, stdout, stderr, finalMessage, outputPath, error, timedOut }) {
   const lines = [
-    ok ? 'Codex execution completed.' : 'Codex execution failed.',
+    ok
+      ? 'Codex execution completed.'
+      : timedOut
+        ? 'Codex execution timed out.'
+        : 'Codex execution failed.',
     '',
     `Final message file: ${relative(outputPath)}`
   ];
 
   if (error) {
-    lines.push('', '## spawn error', error.message);
+    lines.push('', '## error', error);
   }
 
   if (finalMessage.trim()) {
