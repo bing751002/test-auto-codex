@@ -2,6 +2,11 @@
   "defaultProject": "agent-kanban-system",
   "workspaceRoot": "D:\\work",
   "cloneIfMissing": true,
+  "allowDirectPath": true,
+  "allowedRoots": [
+    "D:\\work",
+    "D:\\shared-tasks"
+  ],
   "projects": {
     "agent-kanban-system": {
       "path": "D:\\agent-kanban-system"

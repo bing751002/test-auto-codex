@@ -41,6 +41,30 @@ body:
     validations:
       required: false
 
+  - type: dropdown
+    id: target_mode
+    attributes:
+      label: 目標資料夾模式
+      description: 選擇 runner 要如何決定本機工作資料夾。
+      options:
+        - 使用 issue 所在 repo 的預設資料夾
+        - 使用 /project 指定白名單 project
+        - 使用 /path 直接指定本機資料夾
+      default: 0
+    validations:
+      required: true
+
+  - type: textarea
+    id: direct_path
+    attributes:
+      label: 直接指定本機資料夾
+      description: 只有選擇直接指定本機資料夾時才填。路徑必須落在 runner 電腦 `.runner/projects.json` 的 allowedRoots 內。
+      placeholder: |
+        /path D:\work\adhoc-folder
+        /folder "D:\work\folder with spaces"
+    validations:
+      required: false
+
   - type: textarea
     id: request
     attributes:

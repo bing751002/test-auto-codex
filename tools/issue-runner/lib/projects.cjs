@@ -8,6 +8,8 @@ function readProjectConfig(projectsPath, fallbackRoot) {
       defaultProject: 'default',
       workspaceRoot: '',
       cloneIfMissing: false,
+      allowDirectPath: false,
+      allowedRoots: [],
       projects: {
         default: { path: fallbackRoot }
       },
@@ -16,6 +18,7 @@ function readProjectConfig(projectsPath, fallbackRoot) {
   }
 
   const parsed = JSON.parse(stripBom(fs.readFileSync(projectsPath, 'utf8')));
+  const workspaceRoot = parsed.workspaceRoot ? path.resolve(parsed.workspaceRoot) : '';
   const projects = {};
   for (const [name, value] of Object.entries(parsed.projects || {})) {
     assertSafeProjectName(name);
@@ -23,7 +26,7 @@ function readProjectConfig(projectsPath, fallbackRoot) {
     if (!projectPath) {
       throw new Error(`project "${name}" is missing path`);
     }
-    projects[name] = { path: path.resolve(projectPath) };
+    projects[name] = normalizeProjectValue(value, projectPath);
   }
 
   const names = Object.keys(projects);
@@ -38,14 +41,21 @@ function readProjectConfig(projectsPath, fallbackRoot) {
 
   return {
     defaultProject,
-    workspaceRoot: parsed.workspaceRoot ? path.resolve(parsed.workspaceRoot) : '',
+    workspaceRoot,
     cloneIfMissing: Boolean(parsed.cloneIfMissing),
+    allowDirectPath: Boolean(parsed.allowDirectPath),
+    allowedRoots: normalizeAllowedRoots(parsed.allowedRoots, workspaceRoot),
     projects,
     repos: normalizeRepos(parsed.repos || {})
   };
 }
 
 function resolveIssueProject(issue, projectConfig) {
+  const directPath = extractPathDirective(issue.body || '');
+  if (directPath) {
+    return resolveDirectPath(directPath, projectConfig);
+  }
+
   const requested = extractProjectDirective(issue.body || '');
   const name = requested || projectConfig.defaultProject;
   const project = projectConfig.projects[name];
@@ -67,6 +77,7 @@ function resolveIssueProject(issue, projectConfig) {
     }
   };
   if (project.repo) resolved.project.repo = project.repo;
+  if (project.directPath) resolved.project.directPath = true;
   if (project.cloneIfMissing !== undefined) resolved.project.cloneIfMissing = Boolean(project.cloneIfMissing);
   return resolved;
 }
@@ -76,18 +87,53 @@ function extractProjectDirective(text) {
   return match ? match[1] : '';
 }
 
+function extractPathDirective(text) {
+  const match = String(text).match(/^\s*\/(?:path|folder)\s+(.+?)\s*$/im);
+  return match ? stripOptionalQuotes(match[1].trim()) : '';
+}
+
+function resolveDirectPath(rawPath, projectConfig) {
+  const requested = path.resolve(rawPath);
+  if (!projectConfig.allowDirectPath) {
+    return {
+      ok: false,
+      reason: 'direct-path-disabled',
+      requested
+    };
+  }
+
+  const allowedRoots = projectConfig.allowedRoots || [];
+  if (!isInsideAllowedRoots(requested, allowedRoots)) {
+    return {
+      ok: false,
+      reason: 'direct-path-outside-allowed-roots',
+      requested,
+      allowedRoots
+    };
+  }
+
+  return {
+    ok: true,
+    project: {
+      name: 'direct-path',
+      path: requested,
+      directPath: true,
+      cloneIfMissing: false
+    }
+  };
+}
+
 function resolveRepoPlans(fallbackRepo, projectConfig) {
   const repoEntries = Object.entries(projectConfig.repos || {});
   if (repoEntries.length === 0) {
     return [{ repo: fallbackRepo, defaultProject: projectConfig.defaultProject }];
   }
 
-  return repoEntries
-    .map(([repo, value]) => ({
-      repo,
-      defaultProject: value.project || projectConfig.defaultProject,
-      repoConfig: value
-    }));
+  return repoEntries.map(([repo, value]) => ({
+    repo,
+    defaultProject: value.project || projectConfig.defaultProject,
+    repoConfig: value
+  }));
 }
 
 function projectConfigForRepo(projectConfig, repoPlan) {
@@ -131,6 +177,30 @@ async function ensureProjectDirectory({ project, runCommand = execCommand }) {
 }
 
 function formatProjectNeedsInput(result) {
+  if (result.reason === 'direct-path-disabled') {
+    return [
+      `issue 指定了本機路徑，但此 runner 尚未允許 direct path：\`${result.requested}\`。`,
+      '',
+      '若要允許，請在 runner 電腦的 `.runner/projects.json` 設定：',
+      '',
+      '```json',
+      '{ "allowDirectPath": true, "allowedRoots": ["D:\\\\work"] }',
+      '```'
+    ].join('\n');
+  }
+
+  if (result.reason === 'direct-path-outside-allowed-roots') {
+    const roots = (result.allowedRoots || []).map((root) => `- ${root}`).join('\n') || '- (none)';
+    return [
+      `issue 指定的本機路徑不在允許範圍內：\`${result.requested}\`。`,
+      '',
+      '允許的根目錄：',
+      roots,
+      '',
+      '請改用允許範圍內的資料夾，或更新 runner 電腦的 `.runner/projects.json`。'
+    ].join('\n');
+  }
+
   const available = result.available.length > 0 ? result.available.map((name) => `- ${name}`).join('\n') : '- (none)';
   return [
     `找不到指定的 project：\`${result.requested}\`。`,
@@ -151,6 +221,18 @@ function assertSafeProjectName(name) {
   if (!/^[A-Za-z0-9_.-]+$/.test(name)) {
     throw new Error(`invalid project name: ${name}`);
   }
+}
+
+function normalizeProjectValue(value, projectPath) {
+  const normalized = {
+    path: path.resolve(projectPath)
+  };
+  if (typeof value === 'object' && value) {
+    if (value.repo) normalized.repo = value.repo;
+    if (value.cloneIfMissing !== undefined) normalized.cloneIfMissing = Boolean(value.cloneIfMissing);
+    if (value.directPath) normalized.directPath = true;
+  }
+  return normalized;
 }
 
 function normalizeRepos(repos) {
@@ -178,6 +260,34 @@ function projectFromRepoPlan(projectName, repoPlan, projectConfig) {
   };
 }
 
+function normalizeAllowedRoots(allowedRoots = [], workspaceRoot = '') {
+  const roots = Array.isArray(allowedRoots) ? allowedRoots : [];
+  const resolved = roots.map((root) => path.resolve(root));
+  if (resolved.length === 0 && workspaceRoot) {
+    resolved.push(path.resolve(workspaceRoot));
+  }
+  return resolved;
+}
+
+function isInsideAllowedRoots(targetPath, allowedRoots) {
+  if (!allowedRoots || allowedRoots.length === 0) return false;
+  const normalizedTarget = normalizeForCompare(targetPath);
+  return allowedRoots.some((root) => {
+    const normalizedRoot = normalizeForCompare(path.resolve(root));
+    return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}${path.sep}`);
+  });
+}
+
+function normalizeForCompare(value) {
+  const resolved = path.resolve(value);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function stripOptionalQuotes(value) {
+  const match = /^["'](.+)["']$/.exec(value);
+  return match ? match[1] : value;
+}
+
 function execCommand(command, args) {
   execFileSync(command, args, {
     stdio: 'inherit'
@@ -189,6 +299,7 @@ function stripBom(value) {
 }
 
 module.exports = {
+  extractPathDirective,
   extractProjectDirective,
   ensureProjectDirectory,
   formatProjectNeedsInput,

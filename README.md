@@ -40,6 +40,31 @@
 
 若 issue 指定不存在的 project，runner 會在 issue 回覆 `[agent-kanban] needs-input`，並列出目前可用 project。
 
+### 直接指定本機資料夾
+
+有些工作資料夾不是 git repo，也不適合放進 `repos` 清單。這種情況可以在 issue 指定本機資料夾：
+
+```text
+/path D:\work\adhoc-folder
+```
+
+路徑有空白時：
+
+```text
+/folder "D:\work\folder with spaces"
+```
+
+direct path 預設關閉。要使用，runner 電腦的 `.runner/projects.json` 必須允許：
+
+```json
+{
+  "allowDirectPath": true,
+  "allowedRoots": ["D:\\work"]
+}
+```
+
+runner 只會接受落在 `allowedRoots` 裡面的路徑，避免 issue 任意要求進入公司電腦上的敏感資料夾。
+
 ### 允許 commit / push
 
 預設 runner 只允許 Codex 修改工作樹與回報結果，不會要求 Codex commit 或 push。
@@ -75,6 +100,8 @@ git push
   "defaultProject": "agent-kanban-system",
   "workspaceRoot": "D:\\work",
   "cloneIfMissing": true,
+  "allowDirectPath": true,
+  "allowedRoots": ["D:\\work"],
   "projects": {
     "agent-kanban-system": {
       "path": "D:\\agent-kanban-system"
@@ -99,6 +126,8 @@ git push
 - `project`：該 repo 預設對應的本機 project 名稱。
 - `path`：明確指定本機資料夾。若省略，會使用 `workspaceRoot + repo 名稱`，例如 `D:\work\customer-api`。
 - `cloneIfMissing`：資料夾不存在時是否允許 runner 執行 `gh repo clone <repo> <path>`。
+- `allowDirectPath`：是否允許 issue 用 `/path` 或 `/folder` 直接指定本機資料夾。
+- `allowedRoots`：direct path 允許的根目錄清單。
 - `projects`：手動 `/project` 覆蓋時可使用的白名單。
 
 repo 內也有可提交的範例檔：

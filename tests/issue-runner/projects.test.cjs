@@ -5,6 +5,7 @@ const path = require('node:path');
 const { pollConfiguredRepos } = require('../../tools/issue-runner/runner.cjs');
 const { pollIssues } = require('../../tools/issue-runner/lib/core.cjs');
 const {
+  extractPathDirective,
   extractProjectDirective,
   ensureProjectDirectory,
   projectConfigForRepo,
@@ -16,6 +17,12 @@ const {
 test('extractProjectDirective reads slash project directive from issue body', () => {
   assert.equal(extractProjectDirective('/bot office-pc\n/project customer-api\nDo work.'), 'customer-api');
   assert.equal(extractProjectDirective('No project here.'), '');
+});
+
+test('extractPathDirective reads direct local folder directive from issue body', () => {
+  assert.equal(extractPathDirective('/path D:\\work\\adhoc-folder\nDo work.'), 'D:\\work\\adhoc-folder');
+  assert.equal(extractPathDirective('/folder "D:\\work\\folder with spaces"'), 'D:\\work\\folder with spaces');
+  assert.equal(extractPathDirective('No local path here.'), '');
 });
 
 test('readProjectConfig falls back to current repo when no project config exists', () => {
@@ -40,6 +47,64 @@ test('resolveIssueProject uses default project when issue does not specify one',
   assert.equal(result.ok, true);
   assert.equal(result.project.name, 'agent-kanban-system');
   assert.equal(result.project.path, 'D:\\agent-kanban-system');
+});
+
+test('resolveIssueProject accepts direct local path when enabled and inside allowed root', () => {
+  const result = resolveIssueProject(
+    { body: '/path D:\\work\\adhoc-folder\nBuild this.' },
+    {
+      defaultProject: 'agent-kanban-system',
+      allowDirectPath: true,
+      allowedRoots: ['D:\\work'],
+      projects: {
+        'agent-kanban-system': { path: 'D:\\agent-kanban-system' }
+      }
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.project, {
+    name: 'direct-path',
+    path: 'D:\\work\\adhoc-folder',
+    directPath: true,
+    cloneIfMissing: false
+  });
+});
+
+test('resolveIssueProject rejects direct local path when direct paths are disabled', () => {
+  const result = resolveIssueProject(
+    { body: '/path D:\\work\\adhoc-folder\nBuild this.' },
+    {
+      defaultProject: 'agent-kanban-system',
+      allowDirectPath: false,
+      allowedRoots: ['D:\\work'],
+      projects: {
+        'agent-kanban-system': { path: 'D:\\agent-kanban-system' }
+      }
+    }
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'direct-path-disabled');
+  assert.match(result.requested, /adhoc-folder/);
+});
+
+test('resolveIssueProject rejects direct local path outside allowed roots', () => {
+  const result = resolveIssueProject(
+    { body: '/folder C:\\Sensitive\\Payroll\nBuild this.' },
+    {
+      defaultProject: 'agent-kanban-system',
+      allowDirectPath: true,
+      allowedRoots: ['D:\\work'],
+      projects: {
+        'agent-kanban-system': { path: 'D:\\agent-kanban-system' }
+      }
+    }
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'direct-path-outside-allowed-roots');
+  assert.deepEqual(result.allowedRoots, ['D:\\work']);
 });
 
 test('resolveRepoPlans polls configured repos and maps each repo to its default project', () => {
