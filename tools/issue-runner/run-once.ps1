@@ -23,6 +23,26 @@ function Write-Log {
   $line | Tee-Object -FilePath $LogPath -Append
 }
 
+function Invoke-LoggedNative {
+  param(
+    [string]$FilePath,
+    [string[]]$Arguments
+  )
+
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    & $FilePath @Arguments 2>&1 | Tee-Object -FilePath $LogPath -Append
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+
+  if ($exitCode -ne 0) {
+    throw "$FilePath exited with code $exitCode"
+  }
+}
+
 Write-Log "issue-runner start"
 
 try {
@@ -35,7 +55,7 @@ try {
       if ($RunnerId) {
         $heartbeatArgs += @('--runner-id', $RunnerId)
       }
-      & node @heartbeatArgs 2>&1 | Tee-Object -FilePath $LogPath -Append
+      Invoke-LoggedNative -FilePath 'node' -Arguments $heartbeatArgs
       exit 0
     }
 
@@ -51,7 +71,7 @@ try {
   )
 
   Write-Log "git pull --ff-only"
-  git pull --ff-only 2>&1 | Tee-Object -FilePath $LogPath -Append
+  Invoke-LoggedNative -FilePath 'git' -Arguments @('pull', '--ff-only')
 
   $runnerArgs = @('tools/issue-runner/runner.cjs', 'poll', '--exec-mode', $ExecMode)
   if ($RunnerId) {
@@ -59,7 +79,7 @@ try {
   }
 
   Write-Log "node $($runnerArgs -join ' ')"
-  & node @runnerArgs 2>&1 | Tee-Object -FilePath $LogPath -Append
+  Invoke-LoggedNative -FilePath 'node' -Arguments $runnerArgs
 
   Write-Log "issue-runner complete"
 } catch {

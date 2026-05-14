@@ -287,10 +287,18 @@ function createIssueState(issue, runnerId) {
     title: issue.title,
     url: issue.url,
     runnerId: runnerId || '',
+    engine: extractEngineDirective(issue.body || ''),
     allowPush: hasPushAuthorization(issue),
     answers: {},
     acknowledgedAnswerCommentIds: []
   };
+}
+
+function extractEngineDirective(text) {
+  const match = String(text).match(/^\s*\/engine\s+(codex|claude-code|claude|dry-run)\s*$/im);
+  if (!match) return '';
+  const value = match[1].toLowerCase();
+  return value === 'claude' ? 'claude-code' : value;
 }
 
 function reconstructStatusFromComments(issueState, comments) {

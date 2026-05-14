@@ -601,6 +601,39 @@ test('heartbeat only posts for matching repo prefix when configured', async () =
   assert.deepEqual(posted.map((item) => item.number), [2]);
 });
 
+test('pollIssues records /engine directive on issueState at creation time', async () => {
+  const captured = [];
+  const github = {
+    listIssues: async () => [
+      { number: 40, title: 'Use claude', body: '/engine claude-code\n做這個事', url: 'u40' },
+      { number: 41, title: 'Use codex', body: '/engine codex\n做那個事', url: 'u41' },
+      { number: 42, title: 'No engine', body: '預設引擎', url: 'u42' }
+    ],
+    listComments: async () => [],
+    commentIssue: async () => {}
+  };
+  const executor = {
+    run: async (issue, issueState) => {
+      captured.push({ n: issue.number, engine: issueState.engine });
+      return { ok: true, summary: 'done' };
+    }
+  };
+
+  await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    state: { issues: {} },
+    execute: true
+  });
+
+  const byNumber = Object.fromEntries(captured.map((c) => [c.n, c.engine]));
+  assert.equal(byNumber[40], 'claude-code');
+  assert.equal(byNumber[41], 'codex');
+  assert.equal(byNumber[42], '');
+});
+
 test('pollIssues recovers status from GitHub comments when local state is lost', async () => {
   const executed = [];
   const posted = [];

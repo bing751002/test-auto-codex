@@ -1,3 +1,6 @@
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 function createGitHubClient() {
@@ -36,7 +39,12 @@ function createGitHubClient() {
 
     commentIssue(number, body, { repo } = {}) {
       if (!repo) throw new Error('repo is required for commentIssue');
-      gh(['issue', 'comment', String(number), '--repo', repo, '--body', body]);
+      const bodyPath = writeTempBody(body);
+      try {
+        gh(['issue', 'comment', String(number), '--repo', repo, '--body-file', bodyPath]);
+      } finally {
+        fs.rmSync(path.dirname(bodyPath), { recursive: true, force: true });
+      }
     },
 
     ensureLabel({ repo, label }) {
@@ -57,6 +65,13 @@ function createGitHubClient() {
       }
     }
   };
+}
+
+function writeTempBody(body) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-runner-comment-'));
+  const bodyPath = path.join(tempDir, 'body.md');
+  fs.writeFileSync(bodyPath, String(body), 'utf8');
+  return bodyPath;
 }
 
 function bindRepo(client, repo) {

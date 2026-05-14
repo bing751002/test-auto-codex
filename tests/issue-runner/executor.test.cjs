@@ -176,3 +176,101 @@ test('codex executor captures spawn error when command cannot launch', async () 
   assert.equal(result.ok, false);
   assert.match(result.error, /ENOENT/);
 });
+
+test('claude-code executor uses stdout as final message and reports completion', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-runner-claude-'));
+  const calls = [];
+
+  const fakeSpawn = (cmd, args) => {
+    calls.push({ cmd, args });
+    return createFakeChild({
+      stdout: '已完成需求並通過驗證。',
+      exitCode: 0
+    });
+  };
+
+  const executor = createExecutor({
+    execMode: 'claude-code',
+    projectRoot: tempRoot,
+    requestsDir: path.join(tempRoot, 'requests'),
+    runsDir: path.join(tempRoot, 'runs'),
+    timeoutMs: 5000,
+    spawn: fakeSpawn
+  });
+
+  const result = await executor.run(
+    { number: 200, title: 'claude task', body: '', url: 'u' },
+    { project: { name: 'p', path: tempRoot }, answers: {} }
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, 'claude-code');
+  assert.match(result.summary, /Claude Code execution completed/);
+  assert.match(result.summary, /已完成需求並通過驗證/);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].args.includes('--print'));
+  assert.ok(calls[0].args.includes('--dangerously-skip-permissions'));
+});
+
+test('claude-code executor detects needs-input from stdout content', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-runner-claude-ni-'));
+  const fakeSpawn = () => createFakeChild({
+    stdout: '需要你補充：哪一個資料夾要放這個檔案？',
+    exitCode: 0
+  });
+
+  const executor = createExecutor({
+    execMode: 'claude-code',
+    projectRoot: tempRoot,
+    requestsDir: path.join(tempRoot, 'requests'),
+    runsDir: path.join(tempRoot, 'runs'),
+    timeoutMs: 5000,
+    spawn: fakeSpawn
+  });
+
+  const result = await executor.run(
+    { number: 201, title: 'ambiguous', body: '', url: 'u' },
+    { project: { name: 'p', path: tempRoot }, answers: {} }
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.needsInput, true);
+});
+
+test('createExecutor honors per-issue engine override regardless of default execMode', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-runner-engine-'));
+  const codexCalls = [];
+  const claudeCalls = [];
+
+  const fakeSpawn = (cmd, args) => {
+    const isClaude = String(cmd).includes('claude');
+    (isClaude ? claudeCalls : codexCalls).push({ cmd, args });
+    if (!isClaude) {
+      // codex needs the output file written
+      const outputArg = args[args.indexOf('--output-last-message') + 1];
+      fs.mkdirSync(path.dirname(outputArg), { recursive: true });
+      fs.writeFileSync(outputArg, 'codex done', 'utf8');
+    }
+    return createFakeChild({ stdout: isClaude ? 'claude done' : '', exitCode: 0 });
+  };
+
+  const executor = createExecutor({
+    execMode: 'codex', // default
+    projectRoot: tempRoot,
+    requestsDir: path.join(tempRoot, 'requests'),
+    runsDir: path.join(tempRoot, 'runs'),
+    sandbox: 'workspace-write',
+    timeoutMs: 5000,
+    spawn: fakeSpawn
+  });
+
+  // issueState.engine = 'claude-code' should override default codex
+  const result = await executor.run(
+    { number: 300, title: 'override', body: '', url: 'u' },
+    { project: { name: 'p', path: tempRoot }, answers: {}, engine: 'claude-code' }
+  );
+
+  assert.equal(result.mode, 'claude-code');
+  assert.equal(codexCalls.length, 0);
+  assert.equal(claudeCalls.length, 1);
+});

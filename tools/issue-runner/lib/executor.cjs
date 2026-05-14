@@ -3,11 +3,34 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 function createExecutor(config) {
-  const mode = config.execMode || 'dry-run';
-  if (mode === 'codex') {
-    return createCodexExecutor(config);
+  const defaultMode = config.execMode || 'dry-run';
+  const dry = createDryRunExecutor(config);
+  let codex = null;
+  let claudeCode = null;
+
+  return {
+    run: async (issue, issueState) => {
+      const engine = pickEngine(issueState, defaultMode);
+      if (engine === 'codex') {
+        codex = codex || createCodexExecutor(config);
+        return codex.run(issue, issueState);
+      }
+      if (engine === 'claude-code') {
+        claudeCode = claudeCode || createClaudeCodeExecutor(config);
+        return claudeCode.run(issue, issueState);
+      }
+      return dry.run(issue, issueState);
+    }
+  };
+}
+
+function pickEngine(issueState, defaultMode) {
+  const override = issueState && issueState.engine;
+  if (override === 'codex' || override === 'claude-code' || override === 'dry-run') {
+    return override;
   }
-  return createDryRunExecutor(config);
+  if (defaultMode === 'codex' || defaultMode === 'claude-code') return defaultMode;
+  return 'dry-run';
 }
 
 function createDryRunExecutor(config) {
@@ -59,6 +82,7 @@ function createCodexExecutor(config) {
         input: prompt,
         timeoutMs: config.timeoutMs,
         logPath,
+        wrapWindowsCmd: process.platform === 'win32' && !config.spawn,
         onPid: (pid) => {
           if (typeof config.onChildPid === 'function') config.onChildPid(pid);
         }
@@ -98,7 +122,71 @@ function createCodexExecutor(config) {
   };
 }
 
-function runChildProcess({ spawnImpl, command, args, cwd, input, timeoutMs, logPath, onPid }) {
+function createClaudeCodeExecutor(config) {
+  const spawnImpl = config.spawn || spawn;
+  return {
+    run: async (issue, issueState) => {
+      const projectRoot = issueState.project?.path || config.projectRoot;
+      const promptPath = writePrompt(config.requestsDir, issue, issueState, projectRoot);
+      const logPath = path.join(config.runsDir, `issue-${issue.number}.log`);
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+
+      const prompt = fs.readFileSync(promptPath, 'utf8');
+      const args = [
+        '--print',
+        '--dangerously-skip-permissions',
+        '--output-format', 'text'
+      ];
+
+      const result = await runChildProcess({
+        spawnImpl,
+        command: claudeCodeCommand(),
+        args,
+        cwd: projectRoot,
+        input: prompt,
+        timeoutMs: config.timeoutMs,
+        logPath,
+        wrapWindowsCmd: process.platform === 'win32' && !config.spawn,
+        onPid: (pid) => {
+          if (typeof config.onChildPid === 'function') config.onChildPid(pid);
+        }
+      });
+
+      // Claude Code writes the final assistant message to stdout (no
+      // --output-last-message flag like codex). Treat stdout as the final
+      // message for needs-input detection and summary display.
+      const finalMessage = result.stdout || '';
+      const ok = !result.spawnError && !result.timedOut && result.exitCode === 0;
+      const error = result.spawnError
+        ? result.spawnError.message
+        : result.timedOut
+          ? `timed out after ${config.timeoutMs}ms`
+          : '';
+
+      return {
+        ok,
+        needsInput: detectNeedsInput(finalMessage),
+        mode: 'claude-code',
+        exitCode: result.exitCode,
+        signal: result.signal,
+        timedOut: result.timedOut,
+        pid: result.pid,
+        error,
+        promptPath: relative(promptPath),
+        logPath: relative(logPath),
+        summary: formatClaudeCodeSummary({
+          ok,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          error,
+          timedOut: result.timedOut
+        })
+      };
+    }
+  };
+}
+
+function runChildProcess({ spawnImpl, command, args, cwd, input, timeoutMs, logPath, wrapWindowsCmd, onPid }) {
   return new Promise((resolve) => {
     let logStream = null;
     if (logPath) {
@@ -107,11 +195,12 @@ function runChildProcess({ spawnImpl, command, args, cwd, input, timeoutMs, logP
       logStream.write(`[${new Date().toISOString()}] spawn ${command} ${args.join(' ')}\n`);
     }
 
+    const launch = wrapWindowsCmd ? windowsCmdLaunch(command, args) : { command, args };
     let child;
     try {
-      child = spawnImpl(command, args, {
+      child = spawnImpl(launch.command, launch.args, {
         cwd,
-        shell: process.platform === 'win32',
+        shell: false,
         stdio: ['pipe', 'pipe', 'pipe']
       });
     } catch (spawnError) {
@@ -198,6 +287,19 @@ function runChildProcess({ spawnImpl, command, args, cwd, input, timeoutMs, logP
   });
 }
 
+function windowsCmdLaunch(command, args) {
+  return {
+    command: 'cmd.exe',
+    args: ['/d', '/s', '/c', [command, ...args].map(quoteForCmd).join(' ')]
+  };
+}
+
+function quoteForCmd(value) {
+  const text = String(value);
+  if (!/[ \t&()^%!,;=]/.test(text)) return text;
+  return `"${text.replace(/"/g, '\\"')}"`;
+}
+
 function detectNeedsInput(finalMessage) {
   const text = String(finalMessage || '');
   return /需要你|需要使用者|需要補充|無法判斷|needs? input|needs? clarification/i.test(text);
@@ -259,19 +361,43 @@ function codexCommand() {
   return process.platform === 'win32' ? 'codex.cmd' : 'codex';
 }
 
+function claudeCodeCommand() {
+  return process.platform === 'win32' ? 'claude.cmd' : 'claude';
+}
+
+function formatClaudeCodeSummary({ ok, stdout, stderr, error, timedOut }) {
+  const lines = [
+    timedOut
+      ? 'Claude Code execution timed out.'
+      : ok
+        ? 'Claude Code execution completed.'
+        : 'Claude Code execution failed.'
+  ];
+
+  if (error) {
+    lines.push('', timedOut ? '## timeout' : '## spawn error', error);
+  }
+
+  if (stdout.trim()) {
+    lines.push('', '## Final Message', stdout.trim());
+  }
+
+  if (!ok && stderr.trim()) {
+    lines.push('', '## stderr', stderr.trim());
+  }
+
+  return lines.join('\n');
+}
+
 function formatCodexSummary({ ok, stdout, stderr, finalMessage, outputPath, error, timedOut }) {
   const lines = [
-    ok
-      ? 'Codex execution completed.'
-      : timedOut
-        ? 'Codex execution timed out.'
-        : 'Codex execution failed.',
+    timedOut ? 'Codex execution timed out.' : ok ? 'Codex execution completed.' : 'Codex execution failed.',
     '',
     `Final message file: ${relative(outputPath)}`
   ];
 
   if (error) {
-    lines.push('', '## error', error);
+    lines.push('', timedOut ? '## timeout' : '## spawn error', error);
   }
 
   if (finalMessage.trim()) {

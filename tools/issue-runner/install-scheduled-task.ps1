@@ -2,7 +2,7 @@ param(
   [string]$TaskName = 'AgentKanbanIssueRunner',
   [int]$IntervalMinutes = 1,
   [int]$ExecutionLimitMinutes = 120,
-  [ValidateSet('dry-run', 'codex')]
+  [ValidateSet('dry-run', 'codex', 'claude-code')]
   [string]$ExecMode = 'dry-run',
   [string]$RunnerId = $env:COMPUTERNAME
 )
