@@ -169,6 +169,30 @@ node tools/issue-runner/runner.cjs ensure-label
 node tools/issue-runner/runner.cjs poll --exec-mode dry-run
 ```
 
+## citiesocial 類別商品數爬蟲
+
+GitHub issue `bing751002/test-auto-codex#5` 的交付腳本會在執行時連線到 citiesocial，統計五個指定頂層類別的商品數：
+
+- 家居
+- 休閒娛樂
+- 服飾配件
+- 3C科技
+- 美容與保健
+
+輸出 JSON：
+
+```powershell
+node tools/citiesocial-category-counts.cjs
+```
+
+輸出表格：
+
+```powershell
+node tools/citiesocial-category-counts.cjs --table
+```
+
+腳本優先讀取 Shopify collection products JSON endpoint，並在 JSON endpoint 無法使用時改用 collection HTML 頁面的商品連結做去重統計。
+
 ## Windows 排程
 
 安裝隱藏執行的排程：
