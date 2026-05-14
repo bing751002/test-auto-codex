@@ -103,11 +103,24 @@ function writePrompt(requestsDir, issue, issueState = {}) {
     '## 後續回覆',
     formatAnswers(issueState.answers),
     '',
+    '## Git 權限',
+    issueState.allowPush
+      ? [
+          '- 使用者已明確授權 commit 並 push。',
+          '- 完成實作與驗證後，可以自行執行 `git add`、`git commit`、`git push`。',
+          '- commit message 必須簡短描述本 issue 的實作。'
+        ].join('\n')
+      : [
+          '- 使用者尚未明確授權 commit/push。',
+          '- 可以修改工作樹並驗證，但不要 commit、不要 push。',
+          '- 完成後回報未提交檔案與驗證結果。'
+        ].join('\n'),
+    '',
     '## 執行規則',
     '- 使用繁體中文回覆。',
     '- 先檢查 repo 現況，再決定下一步。',
     '- 若需求不清楚，只產出需要詢問使用者的問題，不要猜測實作。',
-    '- 不要 push。除非需求明確要求，不要做破壞性操作。',
+    '- 除非 Git 權限段落明確允許，不要 push。',
     '- 完成後摘要改動、驗證結果與仍需使用者處理的事項。'
   ].join('\n');
   fs.writeFileSync(promptPath, `${prompt}\n`, 'utf8');

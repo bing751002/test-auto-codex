@@ -20,6 +20,7 @@ async function main() {
   if (command === 'status') {
     console.log(`repo: ${config.repo}`);
     console.log(`label: ${config.label}`);
+    console.log(`runnerId: ${config.runnerId || '(any)'}`);
     console.log(`state: ${relative(config.statePath)}`);
     console.log(`execMode: ${config.execMode}`);
     console.log(`gh: ${authLine()}`);
@@ -39,6 +40,7 @@ async function main() {
       executor: createExecutor(config),
       repo: config.repo,
       label: config.label,
+      runnerId: config.runnerId,
       state,
       execute: config.execute
     });
@@ -84,6 +86,7 @@ function getConfig() {
   return {
     repo,
     label: getArg('--label') || process.env.ISSUE_RUNNER_LABEL || 'agent-kanban',
+    runnerId: getArg('--runner-id') || process.env.ISSUE_RUNNER_ID || '',
     statePath: path.resolve(getArg('--state') || process.env.ISSUE_RUNNER_STATE || '.runner/state.json'),
     projectRoot: process.cwd(),
     requestsDir: path.resolve(process.env.ISSUE_RUNNER_REQUESTS_DIR || '.runner/requests'),

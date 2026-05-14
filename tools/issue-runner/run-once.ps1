@@ -1,5 +1,6 @@
 param(
-  [string]$ExecMode = 'dry-run'
+  [string]$ExecMode = 'dry-run',
+  [string]$RunnerId = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,8 +26,13 @@ try {
   Write-Log "git pull --ff-only"
   git pull --ff-only 2>&1 | Tee-Object -FilePath $LogPath -Append
 
-  Write-Log "node tools/issue-runner/runner.cjs poll --exec-mode $ExecMode"
-  node tools/issue-runner/runner.cjs poll --exec-mode $ExecMode 2>&1 | Tee-Object -FilePath $LogPath -Append
+  $runnerArgs = @('tools/issue-runner/runner.cjs', 'poll', '--exec-mode', $ExecMode)
+  if ($RunnerId) {
+    $runnerArgs += @('--runner-id', $RunnerId)
+  }
+
+  Write-Log "node $($runnerArgs -join ' ')"
+  & node @runnerArgs 2>&1 | Tee-Object -FilePath $LogPath -Append
 
   Write-Log "issue-runner complete"
 } catch {

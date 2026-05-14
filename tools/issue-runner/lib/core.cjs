@@ -1,14 +1,18 @@
-async function pollIssues({ github, repo, label, state, executor, execute = false }) {
+async function pollIssues({ github, repo, label, state, executor, execute = false, runnerId = '' }) {
   const nextState = normalizeState(state);
   const issues = await github.listIssues({ repo, label });
 
   for (const issue of issues) {
+    if (!isAssignedToRunner(issue, runnerId)) continue;
+
     const key = String(issue.number);
     if (!nextState.issues[key]) {
       nextState.issues[key] = {
         status: 'received',
         title: issue.title,
         url: issue.url,
+        runnerId: runnerId || '',
+        allowPush: hasPushAuthorization(issue),
         answers: {},
         acknowledgedAnswerCommentIds: []
       };
@@ -25,6 +29,7 @@ async function pollIssues({ github, repo, label, state, executor, execute = fals
       );
     }
 
+    nextState.issues[key].allowPush = nextState.issues[key].allowPush || hasPushAuthorization(issue);
     await recordAnswers({ github, issue, issueState: nextState.issues[key] });
     if (execute) {
       await executeIssue({ github, issue, issueState: nextState.issues[key], executor });
@@ -132,6 +137,23 @@ function statusForResult(result) {
   if (!result.ok) return 'failed';
   if (result.needsInput) return 'needs-input';
   return 'completed';
+}
+
+function isAssignedToRunner(issue, runnerId) {
+  if (!runnerId) return true;
+  const requested = extractBotDirective(issue.body || '');
+  if (!requested) return true;
+  return requested.toLowerCase() === runnerId.toLowerCase();
+}
+
+function extractBotDirective(text) {
+  const match = String(text).match(/^\s*\/bot\s+([A-Za-z0-9_.-]+)\s*$/im);
+  return match ? match[1] : '';
+}
+
+function hasPushAuthorization(issue) {
+  const text = `${issue.title || ''}\n${issue.body || ''}`;
+  return /\/allow-push\b|commit\s*並\s*push|commit\s+and\s+push|上傳\s*git|推送\s*git|git\s*push/i.test(text);
 }
 
 function isAnswerComment({ body, comment, issueState }) {

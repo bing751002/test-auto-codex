@@ -252,3 +252,81 @@ test('pollIssues resumes needs-input issues from plain user comments', async () 
   assert.equal(result.state.issues['6'].status, 'completed');
   assert.match(posted.map((item) => item.body).join('\n'), /\[agent-kanban\] answer-received/);
 });
+
+test('pollIssues only handles issues assigned to this runner id', async () => {
+  const posted = [];
+  const executed = [];
+  const github = {
+    listIssues: async () => [
+      {
+        number: 7,
+        title: 'For office runner',
+        body: '/bot office-pc\nBuild this.',
+        url: 'https://github.com/example/repo/issues/7'
+      },
+      {
+        number: 8,
+        title: 'For home runner',
+        body: '/bot home-pc\nBuild this.',
+        url: 'https://github.com/example/repo/issues/8'
+      }
+    ],
+    listComments: async () => [],
+    commentIssue: async (number, body) => posted.push({ number, body })
+  };
+  const executor = {
+    run: async (issue) => {
+      executed.push(issue.number);
+      return { ok: true, summary: 'done' };
+    }
+  };
+
+  const result = await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    runnerId: 'office-pc',
+    state: { issues: {} },
+    execute: true
+  });
+
+  assert.deepEqual(executed, [7]);
+  assert.equal(result.state.issues['7'].status, 'completed');
+  assert.equal(result.state.issues['8'], undefined);
+  assert.equal(posted.some((item) => item.number === 8), false);
+});
+
+test('pollIssues passes allowPush to executor when issue explicitly authorizes git upload', async () => {
+  const seen = [];
+  const github = {
+    listIssues: async () => [
+      {
+        number: 9,
+        title: 'Upload changes',
+        body: '請完成後 commit 並 push，上傳 git。\n/bot office-pc',
+        url: 'https://github.com/example/repo/issues/9'
+      }
+    ],
+    listComments: async () => [],
+    commentIssue: async () => {}
+  };
+  const executor = {
+    run: async (issue, issueState) => {
+      seen.push(issueState.allowPush);
+      return { ok: true, summary: 'done' };
+    }
+  };
+
+  await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    runnerId: 'office-pc',
+    state: { issues: {} },
+    execute: true
+  });
+
+  assert.deepEqual(seen, [true]);
+});

@@ -115,7 +115,7 @@ node tools/issue-runner/runner.cjs poll
 若要在公司電腦自動輪詢 issue，可安裝 Windows 工作排程：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools/issue-runner/install-scheduled-task.ps1
+powershell -ExecutionPolicy Bypass -File tools/issue-runner/install-scheduled-task.ps1 -ExecMode codex -RunnerId LAPTOP-2PECR7ML
 ```
 
 手動觸發一次：
@@ -137,7 +137,7 @@ git pull --ff-only
 node tools/issue-runner/runner.cjs poll --exec-mode dry-run
 ```
 
-log 會寫到 `.runner/logs/`。
+排程透過 `wscript.exe` 背景啟動 `run-hidden.vbs`，再由 wrapper 以 hidden PowerShell 執行 `run-once.ps1`，避免每次 poll 跳出黑色 console 視窗。log 會寫到 `.runner/logs/`。
 
 `dry-run` 是預設安全模式：runner 會把 issue 轉成 `.runner/requests/issue-<number>.md`，並在 issue 回覆 completed，但不會真的呼叫 Codex。
 
@@ -160,15 +160,41 @@ codex exec --cd D:\agent-kanban-system --sandbox workspace-write --ask-for-appro
 ```text
 repo: remote origin 推導，例如 bing751002/test-auto-codex
 label: agent-kanban
+runner id: 預設為 Windows COMPUTERNAME，可用 -RunnerId 指定
 state: .runner/state.json
 ```
 
 流程：
 
 1. 遠端在 GitHub issue 加上 `agent-kanban` label。
-2. 公司電腦執行 `poll`。
-3. 新 issue 會被留言標記 `[agent-kanban] status: received`。
-4. 若 runner 需要使用者補充，可在同一 issue 留 `[agent-kanban] needs-input`。
-5. 使用者在同一 issue 回覆 `/answer ...`，下一次 `poll` 會記錄並留言確認。
+2. 如果有多台電腦同時跑 runner，在 issue body 指定目標：
+   ```text
+   /bot LAPTOP-2PECR7ML
+   ```
+   沒有 `/bot` 時，任何 runner 都可以接。
+3. 公司電腦執行 `poll`。
+4. 新 issue 會被留言標記 `[agent-kanban] status: received`。
+5. 若 runner 需要使用者補充，可在同一 issue 留 `[agent-kanban] needs-input`。
+6. 使用者在同一 issue 回覆 `/answer ...`，或直接留下一般 comment，下一次 `poll` 會記錄並繼續。
+
+### Git push 授權
+
+runner 預設不允許 Codex commit/push。issue 必須明確包含以下任一種授權，Codex prompt 才會允許 `git add`、`git commit`、`git push`：
+
+```text
+/allow-push
+commit 並 push
+上傳 git
+git push
+```
+
+建議 issue 寫法：
+
+```text
+/bot LAPTOP-2PECR7ML
+/allow-push
+
+請新增一個靜態 welcome page，完成後 commit 並 push。
+```
 
 `.runner/` 是本機狀態，不進 git。
