@@ -15,3 +15,6 @@ Desktop.ini
 
 # Local git worktrees
 .worktrees/
+
+# Local issue-runner state
+.runner/

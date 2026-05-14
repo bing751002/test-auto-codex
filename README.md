@@ -99,3 +99,33 @@ Stage 0 過了之後，Stage 1→2→3 自動串接。subagent A 完成 = 主 ag
 - ❌ 用未審 general-purpose subagent 產出核心 agent prompt（bootstrap 套娃）
 - ❌ 把 task 狀態存在 session memory（換 session 就消失）
 - ❌ 重發明 GSD / Kanban schema
+
+## GitHub Issue Runner 試驗
+
+這個專案可以用 GitHub issue 當遠端控制面板，讓公司電腦主動 poll issue，不需要外部 SSH 進入公司電腦。
+
+目前第一版 runner 放在 `tools/issue-runner/`，使用 GitHub CLI 的登入狀態。
+
+```powershell
+node tools/issue-runner/runner.cjs status
+node tools/issue-runner/runner.cjs ensure-label
+node tools/issue-runner/runner.cjs poll
+```
+
+預設設定：
+
+```text
+repo: remote origin 推導，例如 bing751002/test-auto-codex
+label: agent-kanban
+state: .runner/state.json
+```
+
+流程：
+
+1. 遠端在 GitHub issue 加上 `agent-kanban` label。
+2. 公司電腦執行 `poll`。
+3. 新 issue 會被留言標記 `[agent-kanban] status: received`。
+4. 若 runner 需要使用者補充，可在同一 issue 留 `[agent-kanban] needs-input`。
+5. 使用者在同一 issue 回覆 `/answer ...`，下一次 `poll` 會記錄並留言確認。
+
+`.runner/` 是本機狀態，不進 git。
