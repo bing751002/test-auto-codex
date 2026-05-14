@@ -112,6 +112,33 @@ node tools/issue-runner/runner.cjs ensure-label
 node tools/issue-runner/runner.cjs poll
 ```
 
+若要在公司電腦自動輪詢 issue，可安裝 Windows 工作排程：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/issue-runner/install-scheduled-task.ps1
+```
+
+手動觸發一次：
+
+```powershell
+Start-ScheduledTask -TaskName AgentKanbanIssueRunner
+```
+
+移除排程：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/issue-runner/uninstall-scheduled-task.ps1
+```
+
+每次執行會跑：
+
+```powershell
+git pull --ff-only
+node tools/issue-runner/runner.cjs poll
+```
+
+log 會寫到 `.runner/logs/`。
+
 預設設定：
 
 ```text
