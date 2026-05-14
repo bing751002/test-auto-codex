@@ -8,22 +8,19 @@ $ErrorActionPreference = 'Stop'
 
 $ProjectRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 $HeartbeatScript = Join-Path $ProjectRoot 'tools\issue-runner\run-heartbeat.ps1'
-$HiddenRunner = Join-Path $ProjectRoot 'tools\issue-runner\run-hidden.vbs'
+$HiddenRunner = Join-Path $ProjectRoot 'tools\issue-runner\run-heartbeat-hidden.vbs'
 
 if (-not (Test-Path $HeartbeatScript)) {
   throw "heartbeat script not found: $HeartbeatScript"
 }
 
 if (-not (Test-Path $HiddenRunner)) {
-  throw "hidden runner not found: $HiddenRunner"
+  throw "hidden heartbeat runner not found: $HiddenRunner"
 }
 
-# The hidden VBS launcher routes through run-once.ps1, so register a direct
-# PowerShell action for heartbeat to avoid the poll lock. WindowStyle Hidden
-# keeps it from flashing.
 $Action = New-ScheduledTaskAction `
-  -Execute 'powershell.exe' `
-  -Argument "-NoProfile -WindowStyle Hidden -NonInteractive -ExecutionPolicy Bypass -File `"$HeartbeatScript`" -RunnerId `"$RunnerId`"" `
+  -Execute 'wscript.exe' `
+  -Argument "//B //Nologo `"$HiddenRunner`" `"$RunnerId`"" `
   -WorkingDirectory $ProjectRoot
 
 $Trigger = New-ScheduledTaskTrigger `
