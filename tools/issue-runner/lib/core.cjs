@@ -63,14 +63,19 @@ async function processIssue({
 }) {
   const key = issueStateKey(issue.number, stateKeyPrefix);
   const legacyKey = String(issue.number);
-  const comments = await github.listComments(issue.number);
-  const projectResult = projectConfig ? resolveIssueProject(issue, projectConfig) : null;
 
   if (!state.issues[key] && stateKeyPrefix && state.issues[legacyKey]) {
     state.issues[key] = state.issues[legacyKey];
     delete state.issues[legacyKey];
     await persist();
   }
+
+  if (state.issues[key] && isTerminalStatus(state.issues[key].status)) {
+    return;
+  }
+
+  const comments = await github.listComments(issue.number);
+  const projectResult = projectConfig ? resolveIssueProject(issue, projectConfig) : null;
 
   if (!state.issues[key]) {
     state.issues[key] = createIssueState(issue, runnerId);
@@ -295,10 +300,38 @@ function createIssueState(issue, runnerId) {
 }
 
 function extractEngineDirective(text) {
-  const match = String(text).match(/^\s*\/engine\s+(codex|claude-code|claude|dry-run)\s*$/im);
+  const slash = String(text).match(/^\s*\/engine\s+(codex|claude-code|claude|dry-run)\s*$/im);
+  if (slash) return normalizeEngine(slash[1]);
+  const section = readFormSectionValue(text, 'Engine');
+  return normalizeEngine(section);
+}
+
+function normalizeEngine(raw) {
+  const value = String(raw || '').trim().toLowerCase();
+  if (!value || value === 'default') return '';
+  if (value === 'claude') return 'claude-code';
+  if (['codex', 'claude-code', 'dry-run'].includes(value)) return value;
+  return '';
+}
+
+function readFormSectionValue(text, headerName) {
+  // Matches GitHub Issue Form output of the form:
+  //   ### <headerName>
+  //   <value>
+  // Header match is whole-word so "Engine" does not match "Engine settings".
+  // Returns '' if the section is missing or filled with the GitHub placeholder
+  // for skipped fields ("_No response_") or an unchecked checkbox.
+  const re = new RegExp(`^###\\s+${escapeRegex(headerName)}\\b[^\\r\\n]*\\r?\\n[\\r\\n\\s]*([^\\r\\n][^\\r\\n]*?)\\s*(?:\\r?\\n|$)`, 'im');
+  const match = String(text).match(re);
   if (!match) return '';
-  const value = match[1].toLowerCase();
-  return value === 'claude' ? 'claude-code' : value;
+  const value = match[1].trim();
+  if (!value) return '';
+  if (/^_No response_$/i.test(value)) return '';
+  return value;
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function reconstructStatusFromComments(issueState, comments) {
@@ -335,6 +368,10 @@ function statusForResult(result) {
   return 'completed';
 }
 
+function isTerminalStatus(status) {
+  return ['completed', 'failed', 'cancelled'].includes(String(status || '').toLowerCase());
+}
+
 function issueStateKey(issueNumber, prefix) {
   return prefix ? `${prefix}#${issueNumber}` : String(issueNumber);
 }
@@ -352,13 +389,26 @@ function isAssignedToRunner(issue, runnerId) {
 }
 
 function extractBotDirective(text) {
-  const match = String(text).match(/^\s*\/bot\s+([A-Za-z0-9_.-]+)\s*$/im);
-  return match ? match[1] : '';
+  const slash = String(text).match(/^\s*\/bot\s+([A-Za-z0-9_.-]+)\s*$/im);
+  if (slash) return slash[1];
+  const section = readFormSectionValue(text, 'Runner');
+  if (!section) return '';
+  if (/^any$/i.test(section)) return '';
+  if (/^[A-Za-z0-9_.-]+$/.test(section)) return section;
+  return '';
 }
 
 function hasPushAuthorization(issue) {
   const text = `${issue.title || ''}\n${issue.body || ''}`;
-  return /\/allow-push\b|commit\s*(?:並|and)?\s*push|上傳\s*git|git\s*push/i.test(text);
+  // Checkbox form output renders as "- [x] ..." for checked, "- [ ] ..." for
+  // unchecked, so a literal /allow-push appearing only after [x] is the
+  // expected dropdown/checkbox signal.
+  if (/-\s*\[x\][^\r\n]*\/allow-push\b/i.test(text)) return true;
+  if (/-\s*\[x\][^\r\n]*(?:允許|allow)[^\r\n]*push/i.test(text)) return true;
+  // Slash directive form (typed by user, not GitHub Form):
+  if (/^\s*\/allow-push\b/im.test(text)) return true;
+  // Legacy natural-language phrasings supported since v1:
+  return /commit\s*(?:並|and)?\s*push|上傳\s*git|git\s*push/i.test(text);
 }
 
 function hasAgentStatus(comments, status) {

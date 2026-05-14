@@ -83,13 +83,35 @@ function resolveIssueProject(issue, projectConfig) {
 }
 
 function extractProjectDirective(text) {
-  const match = String(text).match(/^\s*\/project\s+([A-Za-z0-9_.-]+)\s*$/im);
-  return match ? match[1] : '';
+  const slash = String(text).match(/^\s*\/project\s+([A-Za-z0-9_.-]+)\s*$/im);
+  if (slash) return slash[1];
+  const section = readFormSectionValue(text, 'Project');
+  if (!section) return '';
+  if (/^default$/i.test(section)) return '';
+  if (/^[A-Za-z0-9_.-]+$/.test(section)) return section;
+  return '';
 }
 
 function extractPathDirective(text) {
-  const match = String(text).match(/^\s*\/(?:path|folder)\s+(.+?)\s*$/im);
-  return match ? stripOptionalQuotes(match[1].trim()) : '';
+  const slash = String(text).match(/^\s*\/(?:path|folder)\s+(.+?)\s*$/im);
+  if (slash) return stripOptionalQuotes(slash[1].trim());
+  const section = readFormSectionValue(text, 'Local path');
+  if (!section || /^none$/i.test(section)) return '';
+  return stripOptionalQuotes(section);
+}
+
+function readFormSectionValue(text, headerName) {
+  const re = new RegExp(`^###\\s+${escapeRegex(headerName)}\\b[^\\r\\n]*\\r?\\n[\\r\\n\\s]*([^\\r\\n][^\\r\\n]*?)\\s*(?:\\r?\\n|$)`, 'im');
+  const match = String(text).match(re);
+  if (!match) return '';
+  const value = match[1].trim();
+  if (!value) return '';
+  if (/^_No response_$/i.test(value)) return '';
+  return value;
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function resolveDirectPath(rawPath, projectConfig) {

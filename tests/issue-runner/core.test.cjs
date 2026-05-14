@@ -517,6 +517,41 @@ test('pollIssues drops legacy unprefixed state after migrating to repo-namespace
   assert.equal(result.state.issues['example/repo#4'].status, 'completed');
 });
 
+test('pollIssues skips comment fetch for terminal local state', async () => {
+  let listCommentsCalled = false;
+  const github = {
+    listIssues: async () => [
+      { number: 41, title: 'Done already', url: 'https://github.com/example/repo/issues/41' }
+    ],
+    listComments: async () => {
+      listCommentsCalled = true;
+      return [];
+    },
+    commentIssue: async () => {}
+  };
+
+  const result = await pollIssues({
+    github,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    stateKeyPrefix: 'example/repo',
+    state: {
+      issues: {
+        'example/repo#41': { status: 'completed', title: 'Done already' }
+      }
+    },
+    execute: true,
+    executor: {
+      run: async () => {
+        throw new Error('should not execute completed issue');
+      }
+    }
+  });
+
+  assert.equal(listCommentsCalled, false);
+  assert.equal(result.state.issues['example/repo#41'].status, 'completed');
+});
+
 test('heartbeat posts still-running comment for stale running issues', async () => {
   const posted = [];
   const github = {
@@ -632,6 +667,70 @@ test('pollIssues records /engine directive on issueState at creation time', asyn
   assert.equal(byNumber[40], 'claude-code');
   assert.equal(byNumber[41], 'codex');
   assert.equal(byNumber[42], '');
+});
+
+test('pollIssues parses GitHub Issue Form section bodies for runner/engine/push', async () => {
+  const captured = [];
+  const formBody = [
+    '### Runner',
+    '',
+    'office-pc',
+    '',
+    '### Engine',
+    '',
+    'claude-code',
+    '',
+    '### 需求內容',
+    '',
+    '做這個事',
+    '',
+    '### Git push',
+    '',
+    '- [x] /allow-push - 完成後允許 runner commit 並 push'
+  ].join('\n');
+  const skippedFormBody = [
+    '### Runner',
+    '',
+    'office-pc',
+    '',
+    '### Engine',
+    '',
+    'Default',
+    '',
+    '### Git push',
+    '',
+    '- [ ] /allow-push - 完成後允許 runner commit 並 push'
+  ].join('\n');
+  const github = {
+    listIssues: async () => [
+      { number: 60, title: 'form A', body: formBody, url: 'u60' },
+      { number: 61, title: 'form B (default engine, no push)', body: skippedFormBody, url: 'u61' }
+    ],
+    listComments: async () => [],
+    commentIssue: async () => {}
+  };
+  const executor = {
+    run: async (issue, issueState) => {
+      captured.push({ n: issue.number, engine: issueState.engine, allowPush: issueState.allowPush });
+      return { ok: true, summary: 'done' };
+    }
+  };
+
+  await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    runnerId: 'office-pc',
+    state: { issues: {} },
+    execute: true
+  });
+
+  const byNumber = Object.fromEntries(captured.map((c) => [c.n, c]));
+  assert.equal(byNumber[60].engine, 'claude-code');
+  assert.equal(byNumber[60].allowPush, true);
+  assert.equal(byNumber[61].engine, '');
+  assert.equal(byNumber[61].allowPush, false);
 });
 
 test('pollIssues recovers status from GitHub comments when local state is lost', async () => {

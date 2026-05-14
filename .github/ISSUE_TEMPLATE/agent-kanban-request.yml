@@ -1,5 +1,5 @@
 name: Agent Kanban Request
-description: 交給公司電腦上的 Codex issue runner 處理需求
+description: 交給公司電腦上的 issue runner 處理需求（下拉版，手機友善）
 title: "[agent-kanban] "
 labels:
   - agent-kanban
@@ -7,61 +7,56 @@ body:
   - type: markdown
     attributes:
       value: |
-        請描述你要 Codex 處理的需求。
+        手機開 issue 時直接點下拉，**不需要打 slash 指令**。
 
-        常用指令：
-
-        ```text
-        /bot LAPTOP-2PECR7ML
-        /allow-push
-        ```
-
-        `/bot` 用來指定哪台電腦處理。
-        一般情況下，runner 會依照 issue 所在 repo 自動找到或 clone 對應的本機資料夾。
-        `/project` 只在你要覆蓋預設本機資料夾時使用。
-        `/allow-push` 代表允許 Codex 在完成後 commit 並 push。
-
-  - type: textarea
-    id: runner
-    attributes:
-      label: 指定 runner
-      description: 如果你有多台電腦在跑 runner，請指定要處理的電腦。
-      value: |
-        /bot LAPTOP-2PECR7ML
-    validations:
-      required: false
-
-  - type: textarea
-    id: project
-    attributes:
-      label: 覆蓋本機 project
-      description: 通常留空。只有需要覆蓋 repo 預設資料夾時，才填 `.runner/projects.json` 裡登記過的 project 名稱。
-      placeholder: |
-        /project agent-kanban-system
-    validations:
-      required: false
+        Runner 依下拉自動處理：哪台電腦、哪個本機資料夾、用 codex 還是 claude-code、是否允許 push。
 
   - type: dropdown
-    id: target_mode
+    id: runner
     attributes:
-      label: 目標資料夾模式
-      description: 選擇 runner 要如何決定本機工作資料夾。
+      label: Runner
+      description: 哪台電腦處理此需求。Any 代表任何 runner 都可接。
       options:
-        - 使用 issue 所在 repo 的預設資料夾
-        - 使用 /project 指定白名單 project
-        - 使用 /path 直接指定本機資料夾
+        - LAPTOP-2PECR7ML
+        - Any
       default: 0
     validations:
       required: true
 
-  - type: textarea
-    id: direct_path
+  - type: dropdown
+    id: project
     attributes:
-      label: 直接指定本機資料夾
-      description: 只有選擇直接指定本機資料夾時才填。路徑必須落在 runner 電腦 `.runner/projects.json` 的 allowedRoots 內。
-      placeholder: |
-        /path D:\work\adhoc-folder
-        /folder "D:\work\folder with spaces"
+      label: Project
+      description: runner 電腦上的本機資料夾。Default 表示用 runner 預設專案。
+      options:
+        - Default
+        - agent-kanban-system
+        - ehsn-tv-pd-sh
+        - scm
+        - faceai
+      default: 0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Engine
+      description: 用 codex 或 claude-code 執行任務。Default 表示用 runner 啟動時的預設。
+      options:
+        - Default
+        - codex
+        - claude-code
+      default: 0
+    validations:
+      required: true
+
+  - type: input
+    id: localpath
+    attributes:
+      label: Local path
+      description: 進階：若想用不在 Project 清單裡的本機資料夾，填路徑（必須在 runner 的 allowedRoots 內）。一般留空。
+      placeholder: "D:\\work\\adhoc-folder"
     validations:
       required: false
 
@@ -69,8 +64,9 @@ body:
     id: request
     attributes:
       label: 需求內容
-      description: 說明你要 Codex 做什麼，包含背景、要改的功能、限制。
-      placeholder: 例如：幫我在 customer-api 加一個匯出報表功能，支援 CSV，並補測試。
+      description: 描述你要 runner 做什麼。背景、目標、要改的功能、限制都寫這。
+      placeholder: |
+        例：在 customer-api 加一個匯出報表功能，支援 CSV，並補測試。
     validations:
       required: true
 
@@ -78,27 +74,18 @@ body:
     id: acceptance
     attributes:
       label: 驗收條件
-      description: 完成時應該符合哪些條件。
-      value: |
-        - [ ] 
-        - [ ] 
-    validations:
-      required: true
-
-  - type: textarea
-    id: constraints
-    attributes:
-      label: 限制與注意事項
-      description: 例如不能動哪些檔案、不能改 API、需要保留相容性、不能上傳敏感資料。
-      placeholder: 例如：不要改資料庫 schema；不要提交 .env；測試需使用現有測試框架。
+      description: 怎樣才算完成。可填可不填。
+      placeholder: |
+        - 功能可從 /api/export 觸發
+        - 測試覆蓋 happy path
     validations:
       required: false
 
   - type: checkboxes
     id: git_push
     attributes:
-      label: Git 上傳授權
-      description: 勾選後 issue body 會包含 `/allow-push`，runner 會允許 Codex commit 並 push。
+      label: Git push
+      description: 勾選後 runner 才會允許執行 git add / commit / push。沒勾就只改檔不提交。
       options:
-        - label: "/allow-push - 允許 Codex commit 並 push / 上傳 git"
+        - label: "/allow-push - 完成後允許 runner commit 並 push"
           required: false
