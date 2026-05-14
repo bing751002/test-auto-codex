@@ -44,13 +44,13 @@ function createCodexExecutor(config) {
       const child = spawnSync(
         codexCommand(),
         [
+          '--ask-for-approval',
+          'never',
           'exec',
           '--cd',
           config.projectRoot,
           '--sandbox',
           config.sandbox,
-          '--ask-for-approval',
-          'never',
           '--output-last-message',
           outputPath,
           '-'
