@@ -706,6 +706,88 @@ test('pollIssues records /engine directive on issueState at creation time', asyn
   assert.equal(byNumber[42], '');
 });
 
+test('received comment surfaces engine, mode, project, allow-push, runner', async () => {
+  const posted = [];
+  const github = {
+    listIssues: async () => [
+      {
+        number: 70,
+        title: 'show plan',
+        body: '/bot office-pc\n/engine claude-code\n/mode answer\n/allow-push\n做這個事',
+        url: 'u70'
+      }
+    ],
+    listComments: async () => [],
+    commentIssue: async (number, body) => posted.push({ number, body })
+  };
+
+  await pollIssues({
+    github,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    runnerId: 'office-pc',
+    state: { issues: {} }
+  });
+
+  const received = posted.find((p) => /\[agent-kanban\] status: received/.test(p.body));
+  assert.ok(received, 'expected a received comment');
+  assert.match(received.body, /Engine: claude-code/);
+  assert.match(received.body, /Mode: answer/);
+  assert.match(received.body, /Allow push: yes/);
+  assert.match(received.body, /Runner: office-pc/);
+});
+
+test('running comment includes engine and mode', async () => {
+  const posted = [];
+  const github = {
+    listIssues: async () => [
+      { number: 71, title: 'running label', body: '/engine claude-code\n/mode answer\n做', url: 'u71' }
+    ],
+    listComments: async () => [],
+    commentIssue: async (number, body) => posted.push({ number, body })
+  };
+  const executor = { run: async () => ({ ok: true, summary: 'done' }) };
+
+  await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    state: { issues: {} },
+    execute: true
+  });
+
+  const running = posted.find((p) => /\[agent-kanban\] status: running/.test(p.body));
+  assert.ok(running);
+  assert.match(running.body, /engine=claude-code/);
+  assert.match(running.body, /mode=answer/);
+});
+
+test('heartbeat uses engine name from issueState instead of hardcoded Codex', async () => {
+  const posted = [];
+  const github = {
+    commentIssue: async (number, body) => posted.push({ number, body })
+  };
+  const now = new Date('2026-05-14T14:00:00Z');
+  const startedAt = new Date(now.getTime() - 12 * 60 * 1000).toISOString();
+  const state = {
+    issues: {
+      'r#5': { status: 'running', startedAt, engine: 'claude-code' }
+    }
+  };
+
+  await heartbeat({
+    github,
+    state,
+    stalenessMs: 5 * 60 * 1000,
+    intervalMs: 10 * 60 * 1000,
+    now: () => now
+  });
+
+  assert.equal(posted.length, 1);
+  assert.match(posted[0].body, /claude-code 仍在處理中/);
+});
+
 test('pollIssues maps executor timedOut to timed-out status separately from failed', async () => {
   const posted = [];
   const github = {

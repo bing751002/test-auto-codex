@@ -83,7 +83,14 @@ async function processIssue({
     await persist();
 
     if (!state.issues[key].recoveredFromComments && (!projectResult || projectResult.ok)) {
-      await commentReceivedOnce({ github, issue, comments });
+      await commentReceivedOnce({
+        github,
+        issue,
+        comments,
+        issueState: state.issues[key],
+        projectResult,
+        defaultExecMode: process.env.ISSUE_RUNNER_EXEC_MODE
+      });
     }
   }
 
@@ -152,12 +159,13 @@ async function heartbeat({
     if (!issueNumber) continue;
 
     const minutes = Math.round(elapsedMs / 60000);
+    const engineLabel = issueState.engine || 'codex';
     await github.commentIssue(
       issueNumber,
       [
         '[agent-kanban] status: still-running',
         '',
-        `已執行約 ${minutes} 分鐘，Codex 仍在處理中。`,
+        `已執行約 ${minutes} 分鐘，${engineLabel} 仍在處理中。`,
         '',
         '若需要中止，請在同一個 issue 留言 `/cancel`。'
       ].join('\n')
@@ -179,12 +187,14 @@ async function executeIssue({ github, issue, issueState, executor, persist = asy
   issueState.lastHeartbeatAt = '';
   await persist();
 
+  const engineLabel = issueState.engine || 'codex';
+  const modeLabel = issueState.mode === 'answer' ? 'answer' : 'dev';
   await github.commentIssue(
     issue.number,
     [
       '[agent-kanban] status: running',
       '',
-      '開始執行此 issue。'
+      `開始執行此 issue（engine=${engineLabel}, mode=${modeLabel}）。`
     ].join('\n')
   );
 
@@ -467,18 +477,38 @@ function isAllowedAuthor(issue, allowedAuthors) {
   return allowedAuthors.some((name) => String(name).toLowerCase() === author);
 }
 
-async function commentReceivedOnce({ github, issue, comments }) {
+async function commentReceivedOnce({ github, issue, comments, issueState = {}, projectResult = null, defaultExecMode = '' }) {
   if (hasAgentStatus(comments, 'received')) return;
+  const block = formatRunPlan(issueState, projectResult, defaultExecMode);
   await github.commentIssue(
     issue.number,
     [
       '[agent-kanban] status: received',
       '',
-      '已收到此需求。公司電腦上的 issue runner 已建立本機追蹤狀態。',
+      '已收到此需求。runner 將以下面設定處理：',
       '',
-      '後續如果需要你補充資訊，runner 會在同一個 issue 留下 `[agent-kanban] needs-input`。'
+      block,
+      '',
+      '想改設定請編輯 issue body 或 close 後重開。需要中止請留言 `/cancel`（如果 runner 已啟用該指令）。'
     ].join('\n')
   );
+}
+
+function formatRunPlan(issueState, projectResult, defaultExecMode) {
+  const engine = issueState.engine || (defaultExecMode ? `${defaultExecMode} (runner 啟動預設)` : 'codex (預設)');
+  const mode = issueState.mode === 'answer' ? 'answer (查詢/計算，不寫檔)' : 'dev (修改 code)';
+  const projectInfo = projectResult?.ok
+    ? `${projectResult.project.name} (${projectResult.project.path})`
+    : '(尚未解析)';
+  const allowPush = issueState.allowPush ? 'yes (允許 commit/push)' : 'no (只改檔，不 commit)';
+  const runner = issueState.runnerId || '(any)';
+  return [
+    `- Engine: ${engine}`,
+    `- Mode: ${mode}`,
+    `- Project: ${projectInfo}`,
+    `- Allow push: ${allowPush}`,
+    `- Runner: ${runner}`
+  ].join('\n');
 }
 
 module.exports = { pollIssues, heartbeat };
