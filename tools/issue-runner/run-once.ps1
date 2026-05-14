@@ -29,18 +29,43 @@ function Invoke-LoggedNative {
     [string[]]$Arguments
   )
 
-  $previousErrorActionPreference = $ErrorActionPreference
-  $ErrorActionPreference = 'Continue'
-  try {
-    & $FilePath @Arguments 2>&1 | Tee-Object -FilePath $LogPath -Append
-    $exitCode = $LASTEXITCODE
-  } finally {
-    $ErrorActionPreference = $previousErrorActionPreference
+  $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+  $processInfo.FileName = $FilePath
+  $processInfo.Arguments = ($Arguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' '
+  $processInfo.WorkingDirectory = (Get-Location).Path
+  $processInfo.UseShellExecute = $false
+  $processInfo.RedirectStandardOutput = $true
+  $processInfo.RedirectStandardError = $true
+
+  $process = New-Object System.Diagnostics.Process
+  $process.StartInfo = $processInfo
+  [void]$process.Start()
+
+  $stdout = $process.StandardOutput.ReadToEnd()
+  $stderr = $process.StandardError.ReadToEnd()
+  $process.WaitForExit()
+
+  if ($stdout) {
+    $stdout.TrimEnd() | Tee-Object -FilePath $LogPath -Append
+  }
+  if ($stderr) {
+    $stderr.TrimEnd() | Tee-Object -FilePath $LogPath -Append
   }
 
-  if ($exitCode -ne 0) {
-    throw "$FilePath exited with code $exitCode"
+  if ($process.ExitCode -ne 0) {
+    throw "$FilePath exited with code $($process.ExitCode)"
   }
+}
+
+function ConvertTo-NativeArgument {
+  param([string]$Value)
+  if ($null -eq $Value) {
+    return '""'
+  }
+  if ($Value -notmatch '[\s"]') {
+    return $Value
+  }
+  return '"' + $Value.Replace('"', '\"') + '"'
 }
 
 Write-Log "issue-runner start"
