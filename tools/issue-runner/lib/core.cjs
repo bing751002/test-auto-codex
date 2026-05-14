@@ -53,12 +53,14 @@ async function executeIssue({ github, issue, issueState, executor }) {
     const result = await executor.run(issue);
     issueState.finishedAt = new Date().toISOString();
     issueState.lastRun = result;
-    issueState.status = result.ok ? 'completed' : 'failed';
+    issueState.status = statusForResult(result);
 
     await github.commentIssue(
       issue.number,
       [
-        `[agent-kanban] status: ${issueState.status}`,
+        issueState.status === 'needs-input'
+          ? '[agent-kanban] needs-input'
+          : `[agent-kanban] status: ${issueState.status}`,
         '',
         truncate(result.summary || '', 4000)
       ].join('\n').trim()
@@ -121,6 +123,12 @@ function truncate(value, maxLength) {
   const text = String(value);
   if (text.length <= maxLength) return text;
   return `${text.slice(0, maxLength - 20)}\n...[truncated]`;
+}
+
+function statusForResult(result) {
+  if (!result.ok) return 'failed';
+  if (result.needsInput) return 'needs-input';
+  return 'completed';
 }
 
 module.exports = { pollIssues };

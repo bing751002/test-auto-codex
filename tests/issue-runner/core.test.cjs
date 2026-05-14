@@ -167,3 +167,35 @@ test('pollIssues reports failed execution and stores error summary', async () =>
   assert.match(posted.map((item) => item.body).join('\n'), /\[agent-kanban\] status: failed/);
   assert.match(posted.map((item) => item.body).join('\n'), /Command exited with code 1/);
 });
+
+test('pollIssues reports needs-input when executor asks the user a question', async () => {
+  const posted = [];
+  const github = {
+    listIssues: async () => [
+      {
+        number: 5,
+        title: 'Ambiguous request',
+        body: 'Build a page.',
+        url: 'https://github.com/example/repo/issues/5'
+      }
+    ],
+    listComments: async () => [],
+    commentIssue: async (number, body) => posted.push({ number, body })
+  };
+  const executor = {
+    run: async () => ({ ok: true, needsInput: true, summary: '需要確認：頁面要放在哪裡？' })
+  };
+
+  const result = await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    state: { issues: {} },
+    execute: true
+  });
+
+  assert.equal(result.state.issues['5'].status, 'needs-input');
+  assert.equal(result.state.issues['5'].lastRun.needsInput, true);
+  assert.match(posted.map((item) => item.body).join('\n'), /\[agent-kanban\] needs-input/);
+});

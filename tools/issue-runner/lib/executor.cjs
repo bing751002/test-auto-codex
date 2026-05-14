@@ -71,6 +71,7 @@ function createCodexExecutor(config) {
 
       return {
         ok,
+        needsInput: detectNeedsInput(finalMessage),
         mode: 'codex',
         exitCode: child.status,
         error: child.error ? child.error.message : '',
@@ -80,6 +81,11 @@ function createCodexExecutor(config) {
       };
     }
   };
+}
+
+function detectNeedsInput(finalMessage) {
+  const text = String(finalMessage || '');
+  return /需要確認|需要你|請回覆|請提供|請補充|無法判斷/.test(text);
 }
 
 function writePrompt(requestsDir, issue) {
