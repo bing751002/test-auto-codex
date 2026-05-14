@@ -13,7 +13,8 @@ function createExecutor(config) {
 function createDryRunExecutor(config) {
   return {
     run: async (issue, issueState) => {
-      const promptPath = writePrompt(config.requestsDir, issue, issueState);
+      const projectRoot = issueState.project?.path || config.projectRoot;
+      const promptPath = writePrompt(config.requestsDir, issue, issueState, projectRoot);
       return {
         ok: true,
         mode: 'dry-run',
@@ -23,11 +24,7 @@ function createDryRunExecutor(config) {
           '',
           `Prompt file: ${relative(promptPath)}`,
           '',
-          '若要啟用真正 Codex 執行，設定環境變數：',
-          '',
-          '```powershell',
-          '$env:ISSUE_RUNNER_EXEC_MODE = "codex"',
-          '```'
+          '若要真正執行 Codex，請把 runner exec mode 設為 codex。'
         ].join('\n')
       };
     }
@@ -37,7 +34,8 @@ function createDryRunExecutor(config) {
 function createCodexExecutor(config) {
   return {
     run: async (issue, issueState) => {
-      const promptPath = writePrompt(config.requestsDir, issue, issueState);
+      const projectRoot = issueState.project?.path || config.projectRoot;
+      const promptPath = writePrompt(config.requestsDir, issue, issueState, projectRoot);
       const outputPath = path.join(config.runsDir, `issue-${issue.number}-last-message.md`);
       fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
@@ -48,7 +46,7 @@ function createCodexExecutor(config) {
           'never',
           'exec',
           '--cd',
-          config.projectRoot,
+          projectRoot,
           '--sandbox',
           config.sandbox,
           '--output-last-message',
@@ -58,7 +56,7 @@ function createCodexExecutor(config) {
         {
           input: fs.readFileSync(promptPath, 'utf8'),
           encoding: 'utf8',
-          cwd: config.projectRoot,
+          cwd: projectRoot,
           timeout: config.timeoutMs,
           shell: process.platform === 'win32'
         }
@@ -85,10 +83,10 @@ function createCodexExecutor(config) {
 
 function detectNeedsInput(finalMessage) {
   const text = String(finalMessage || '');
-  return /需要確認|需要你|請回覆|請提供|請補充|無法判斷/.test(text);
+  return /需要確認|需要你|請回覆|請提供|請補充|無法判斷|need(s)? input|need(s)? clarification/i.test(text);
 }
 
-function writePrompt(requestsDir, issue, issueState = {}) {
+function writePrompt(requestsDir, issue, issueState = {}, projectRoot = '') {
   fs.mkdirSync(requestsDir, { recursive: true });
   const promptPath = path.join(requestsDir, `issue-${issue.number}.md`);
   const body = issue.body || '';
@@ -100,6 +98,11 @@ function writePrompt(requestsDir, issue, issueState = {}) {
     '## 使用者需求',
     body.trim() || '(issue body is empty)',
     '',
+    '## 執行專案',
+    issueState.project
+      ? [`- name: ${issueState.project.name}`, `- path: ${issueState.project.path}`].join('\n')
+      : [`- name: default`, `- path: ${projectRoot || process.cwd()}`].join('\n'),
+    '',
     '## 後續回覆',
     formatAnswers(issueState.answers),
     '',
@@ -107,8 +110,8 @@ function writePrompt(requestsDir, issue, issueState = {}) {
     issueState.allowPush
       ? [
           '- 使用者已明確授權 commit 並 push。',
-          '- 完成實作與驗證後，可以自行執行 `git add`、`git commit`、`git push`。',
-          '- commit message 必須簡短描述本 issue 的實作。'
+          '- 你可以在完成並驗證後執行 `git add`、`git commit`、`git push`。',
+          '- commit message 請簡短描述變更，並提到 issue 編號。'
         ].join('\n')
       : [
           '- 使用者尚未明確授權 commit/push。',

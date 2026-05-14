@@ -5,47 +5,57 @@ const { pollIssues } = require('./lib/core.cjs');
 const { readState, writeState } = require('./lib/state.cjs');
 const { createGitHubClient, bindRepo } = require('./lib/github.cjs');
 const { createExecutor } = require('./lib/executor.cjs');
+const { projectConfigForRepo, readProjectConfig, resolveRepoPlans } = require('./lib/projects.cjs');
 
-const command = process.argv[2] || 'status';
-
-main().catch((error) => {
-  console.error(error.message);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error.message);
+    process.exit(1);
+  });
+}
 
 async function main() {
+  const command = process.argv[2] || 'status';
   const config = getConfig();
-  const github = bindRepo(createGitHubClient(), config.repo);
+  const githubClient = createGitHubClient();
 
   if (command === 'status') {
+    const repoPlans = resolveRepoPlans(config.repo, config.projectConfig);
     console.log(`repo: ${config.repo}`);
+    console.log(`pollRepos: ${repoPlans.map((plan) => plan.repo).join(', ')}`);
     console.log(`label: ${config.label}`);
     console.log(`runnerId: ${config.runnerId || '(any)'}`);
     console.log(`state: ${relative(config.statePath)}`);
+    console.log(`projects: ${relative(config.projectsPath)}`);
+    console.log(`defaultProject: ${config.projectConfig.defaultProject}`);
+    console.log(`availableProjects: ${Object.keys(config.projectConfig.projects).sort().join(', ')}`);
     console.log(`execMode: ${config.execMode}`);
     console.log(`gh: ${authLine()}`);
     return;
   }
 
   if (command === 'ensure-label') {
-    github.ensureLabel({ repo: config.repo, label: config.label });
-    console.log(`OK: label ensured: ${config.label}`);
+    for (const repoPlan of resolveRepoPlans(config.repo, config.projectConfig)) {
+      githubClient.ensureLabel({ repo: repoPlan.repo, label: config.label });
+      console.log(`OK: label ensured: ${repoPlan.repo} ${config.label}`);
+    }
     return;
   }
 
   if (command === 'poll') {
     const state = readState(config.statePath);
-    const result = await pollIssues({
-      github,
+    const result = await pollConfiguredRepos({
+      githubClient,
       executor: createExecutor(config),
-      repo: config.repo,
+      fallbackRepo: config.repo,
       label: config.label,
       runnerId: config.runnerId,
       state,
-      execute: config.execute
+      execute: config.execute,
+      projectConfig: config.projectConfig
     });
     writeState(config.statePath, result.state);
-    console.log(`OK: polled ${config.repo} label:${config.label}`);
+    console.log(`OK: polled ${result.polledRepos.join(', ')} label:${config.label}`);
     return;
   }
 
@@ -56,7 +66,7 @@ async function main() {
       throw new Error('Usage: runner question <issue-number> <question>');
     }
 
-    github.commentIssue(
+    bindRepo(githubClient, config.repo).commentIssue(
       Number(issueNumber),
       [
         '[agent-kanban] needs-input',
@@ -66,7 +76,7 @@ async function main() {
         '請在同一個 issue 回覆：',
         '',
         '```text',
-        '/answer <你的答案>',
+        '/answer <你的回覆>',
         '```'
       ].join('\n')
     );
@@ -77,18 +87,57 @@ async function main() {
   throw new Error(`Unknown command: ${command}`);
 }
 
+async function pollConfiguredRepos({
+  githubClient,
+  executor,
+  fallbackRepo,
+  label,
+  runnerId,
+  state,
+  execute,
+  projectConfig,
+  ensureProject
+}) {
+  const repoPlans = resolveRepoPlans(fallbackRepo, projectConfig);
+  let nextState = state;
+  const polledRepos = [];
+
+  for (const repoPlan of repoPlans) {
+    const result = await pollIssues({
+      github: bindRepo(githubClient, repoPlan.repo),
+      executor,
+      repo: repoPlan.repo,
+      label,
+      runnerId,
+      state: nextState,
+      execute,
+      projectConfig: projectConfigForRepo(projectConfig, repoPlan),
+      stateKeyPrefix: repoPlan.repo,
+      ensureProject
+    });
+    nextState = result.state;
+    polledRepos.push(repoPlan.repo);
+  }
+
+  return { state: nextState, polledRepos };
+}
+
 function getConfig() {
   const repo = getArg('--repo') || process.env.ISSUE_RUNNER_REPO || inferRepoFromGit();
   if (!repo) {
     throw new Error('repo not configured; pass --repo <owner/repo> or set git remote origin');
   }
+  const projectRoot = process.cwd();
+  const projectsPath = path.resolve(getArg('--projects') || process.env.ISSUE_RUNNER_PROJECTS || '.runner/projects.json');
 
   return {
     repo,
     label: getArg('--label') || process.env.ISSUE_RUNNER_LABEL || 'agent-kanban',
     runnerId: getArg('--runner-id') || process.env.ISSUE_RUNNER_ID || '',
     statePath: path.resolve(getArg('--state') || process.env.ISSUE_RUNNER_STATE || '.runner/state.json'),
-    projectRoot: process.cwd(),
+    projectRoot,
+    projectsPath,
+    projectConfig: readProjectConfig(projectsPath, projectRoot),
     requestsDir: path.resolve(process.env.ISSUE_RUNNER_REQUESTS_DIR || '.runner/requests'),
     runsDir: path.resolve(process.env.ISSUE_RUNNER_RUNS_DIR || '.runner/runs'),
     execute: getFlag('--no-execute') ? false : process.env.ISSUE_RUNNER_EXECUTE !== '0',
@@ -145,3 +194,5 @@ function authLine() {
 function relative(filePath) {
   return path.relative(process.cwd(), filePath).replaceAll('\\', '/') || '.';
 }
+
+module.exports = { pollConfiguredRepos };

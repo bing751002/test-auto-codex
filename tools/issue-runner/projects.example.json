@@ -1,0 +1,20 @@
+{
+  "defaultProject": "agent-kanban-system",
+  "workspaceRoot": "D:\\work",
+  "cloneIfMissing": true,
+  "projects": {
+    "agent-kanban-system": {
+      "path": "D:\\agent-kanban-system"
+    }
+  },
+  "repos": {
+    "bing751002/test-auto-codex": {
+      "project": "agent-kanban-system",
+      "path": "D:\\agent-kanban-system",
+      "cloneIfMissing": false
+    },
+    "company/customer-api": {
+      "project": "customer-api"
+    }
+  }
+}

@@ -1,5 +1,5 @@
 name: Agent Kanban Request
-description: 交給公司電腦上的 Codex issue runner 處理
+description: 交給公司電腦上的 Codex issue runner 處理需求
 title: "[agent-kanban] "
 labels:
   - agent-kanban
@@ -7,22 +7,37 @@ body:
   - type: markdown
     attributes:
       value: |
-        請用這個模板建立要交給 Codex runner 的需求。
+        請描述你要 Codex 處理的需求。
 
-        多台電腦同時跑 runner 時，請在「目標 runner」指定 `/bot <runner-id>`。
-        這台公司電腦目前使用：
+        常用指令：
 
         ```text
         /bot LAPTOP-2PECR7ML
+        /allow-push
         ```
+
+        `/bot` 用來指定哪台電腦處理。
+        一般情況下，runner 會依照 issue 所在 repo 自動找到或 clone 對應的本機資料夾。
+        `/project` 只在你要覆蓋預設本機資料夾時使用。
+        `/allow-push` 代表允許 Codex 在完成後 commit 並 push。
 
   - type: textarea
     id: runner
     attributes:
-      label: 目標 runner
-      description: 指定哪台電腦處理。沒有指定時，任何 runner 都可以接。
+      label: 指定 runner
+      description: 如果你有多台電腦在跑 runner，請指定要處理的電腦。
       value: |
         /bot LAPTOP-2PECR7ML
+    validations:
+      required: false
+
+  - type: textarea
+    id: project
+    attributes:
+      label: 覆蓋本機 project
+      description: 通常留空。只有需要覆蓋 repo 預設資料夾時，才填 `.runner/projects.json` 裡登記過的 project 名稱。
+      placeholder: |
+        /project agent-kanban-system
     validations:
       required: false
 
@@ -30,16 +45,16 @@ body:
     id: request
     attributes:
       label: 需求內容
-      description: 說明你要 Codex 做什麼。
-      placeholder: 例如：新增一個靜態 welcome page，放在 tools/test-page/index.html。
+      description: 說明你要 Codex 做什麼，包含背景、要改的功能、限制。
+      placeholder: 例如：幫我在 customer-api 加一個匯出報表功能，支援 CSV，並補測試。
     validations:
       required: true
 
   - type: textarea
     id: acceptance
     attributes:
-      label: 驗收標準
-      description: 列出完成後要符合的條件。
+      label: 驗收條件
+      description: 完成時應該符合哪些條件。
       value: |
         - [ ] 
         - [ ] 
@@ -49,9 +64,9 @@ body:
   - type: textarea
     id: constraints
     attributes:
-      label: 限制與補充
-      description: 寫明不要做的事、指定路徑、測試要求、風格要求等。
-      placeholder: 例如：不要使用外部 CDN；必須能直接用瀏覽器開啟。
+      label: 限制與注意事項
+      description: 例如不能動哪些檔案、不能改 API、需要保留相容性、不能上傳敏感資料。
+      placeholder: 例如：不要改資料庫 schema；不要提交 .env；測試需使用現有測試框架。
     validations:
       required: false
 
@@ -59,7 +74,7 @@ body:
     id: git_push
     attributes:
       label: Git 上傳授權
-      description: 勾選後，issue body 會包含 `/allow-push`，runner 會允許 Codex commit 並 push。
+      description: 勾選後 issue body 會包含 `/allow-push`，runner 會允許 Codex commit 並 push。
       options:
-        - label: "/allow-push - 完成後允許 Codex commit 並 push / 上傳 git"
+        - label: "/allow-push - 允許 Codex commit 並 push / 上傳 git"
           required: false

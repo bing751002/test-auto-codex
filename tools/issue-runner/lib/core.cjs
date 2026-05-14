@@ -1,46 +1,144 @@
-async function pollIssues({ github, repo, label, state, executor, execute = false, runnerId = '' }) {
+const { ensureProjectDirectory, formatProjectNeedsInput, resolveIssueProject } = require('./projects.cjs');
+
+async function pollIssues({
+  github,
+  repo,
+  label,
+  state,
+  executor,
+  execute = false,
+  runnerId = '',
+  projectConfig,
+  stateKeyPrefix = '',
+  ensureProject = (project) => ensureProjectDirectory({ project })
+}) {
   const nextState = normalizeState(state);
   const issues = await github.listIssues({ repo, label });
 
   for (const issue of issues) {
     if (!isAssignedToRunner(issue, runnerId)) continue;
 
-    const key = String(issue.number);
+    const key = issueStateKey(issue.number, stateKeyPrefix);
+    const legacyKey = String(issue.number);
     const comments = await github.listComments(issue.number);
-    if (!nextState.issues[key]) {
-      const alreadyReceived = hasAgentStatus(comments, 'received');
-      nextState.issues[key] = {
-        status: 'received',
-        title: issue.title,
-        url: issue.url,
-        runnerId: runnerId || '',
-        allowPush: hasPushAuthorization(issue),
-        answers: {},
-        acknowledgedAnswerCommentIds: []
-      };
+    const projectResult = projectConfig ? resolveIssueProject(issue, projectConfig) : null;
 
-      if (!alreadyReceived) {
-        await github.commentIssue(
-          issue.number,
-          [
-            '[agent-kanban] status: received',
-            '',
-            '已收到此需求。公司電腦上的 issue runner 已建立本機追蹤狀態。',
-            '',
-            '後續如果需要你補充資訊，runner 會在同一個 issue 留下 `[agent-kanban] needs-input`。'
-          ].join('\n')
-        );
+    if (!nextState.issues[key] && stateKeyPrefix && nextState.issues[legacyKey]) {
+      nextState.issues[key] = nextState.issues[legacyKey];
+    }
+
+    if (!nextState.issues[key]) {
+      nextState.issues[key] = createIssueState(issue, runnerId);
+
+      if (!projectResult || projectResult.ok) {
+        await commentReceivedOnce({ github, issue, comments });
       }
+    }
+
+    if (projectResult && !projectResult.ok) {
+      await markUnknownProject({ github, issue, issueState: nextState.issues[key], comments, projectResult });
+      continue;
+    }
+
+    if (projectResult?.ok) {
+      nextState.issues[key].project = projectResult.project;
+      nextState.issues[key].projectError = '';
     }
 
     nextState.issues[key].allowPush = nextState.issues[key].allowPush || hasPushAuthorization(issue);
     await recordAnswers({ github, issue, issueState: nextState.issues[key], comments });
+
+    if (execute && nextState.issues[key].status === 'received' && nextState.issues[key].project) {
+      const prepared = await ensureProject(nextState.issues[key].project);
+      if (!prepared.ok) {
+        await markProjectNeedsInput({ github, issue, issueState: nextState.issues[key], comments, prepared });
+        continue;
+      }
+      nextState.issues[key].project.preparedAt = new Date().toISOString();
+      nextState.issues[key].project.cloned = Boolean(prepared.cloned);
+    }
+
     if (execute) {
       await executeIssue({ github, issue, issueState: nextState.issues[key], executor });
     }
   }
 
   return { state: nextState };
+}
+
+async function markProjectNeedsInput({ github, issue, issueState, comments, prepared }) {
+  issueState.status = 'needs-input';
+  issueState.projectError = prepared.reason || 'project-not-ready';
+  issueState.lastRun = {
+    ok: true,
+    needsInput: true,
+    summary: prepared.summary || 'project is not ready'
+  };
+
+  if (hasAgentNeedsInput(comments, prepared.summary || issueState.projectError)) return;
+
+  await github.commentIssue(
+    issue.number,
+    [
+      '[agent-kanban] needs-input',
+      '',
+      truncate(prepared.summary || 'project is not ready', 4000)
+    ].join('\n')
+  );
+}
+
+function createIssueState(issue, runnerId) {
+  return {
+    status: 'received',
+    title: issue.title,
+    url: issue.url,
+    runnerId: runnerId || '',
+    allowPush: hasPushAuthorization(issue),
+    answers: {},
+    acknowledgedAnswerCommentIds: []
+  };
+}
+
+function issueStateKey(issueNumber, prefix) {
+  return prefix ? `${prefix}#${issueNumber}` : String(issueNumber);
+}
+
+async function commentReceivedOnce({ github, issue, comments }) {
+  if (hasAgentStatus(comments, 'received')) return;
+
+  await github.commentIssue(
+    issue.number,
+    [
+      '[agent-kanban] status: received',
+      '',
+      '已收到此需求。公司電腦上的 issue runner 已建立本機追蹤狀態。',
+      '',
+      '後續如果需要你補充資訊，runner 會在同一個 issue 留下 `[agent-kanban] needs-input`。'
+    ].join('\n')
+  );
+}
+
+async function markUnknownProject({ github, issue, issueState, comments, projectResult }) {
+  const summary = formatProjectNeedsInput(projectResult);
+  issueState.status = 'needs-input';
+  issueState.projectError = projectResult.reason;
+  issueState.project = null;
+  issueState.lastRun = {
+    ok: true,
+    needsInput: true,
+    summary
+  };
+
+  if (hasAgentNeedsInputForProject(comments, projectResult.requested)) return;
+
+  await github.commentIssue(
+    issue.number,
+    [
+      '[agent-kanban] needs-input',
+      '',
+      summary
+    ].join('\n')
+  );
 }
 
 async function executeIssue({ github, issue, issueState, executor }) {
@@ -54,7 +152,7 @@ async function executeIssue({ github, issue, issueState, executor }) {
     [
       '[agent-kanban] status: running',
       '',
-      '公司電腦已開始處理此 issue。'
+      '開始執行此 issue。'
     ].join('\n')
   );
 
@@ -96,7 +194,7 @@ async function recordAnswers({ github, issue, issueState, comments }) {
 
   for (const comment of comments) {
     const body = String(comment.body || '').trim();
-    if (!isAnswerComment({ body, comment, issueState })) continue;
+    if (!isAnswerComment({ body, issueState })) continue;
 
     issueState.answers[String(comment.id)] = {
       body,
@@ -110,7 +208,7 @@ async function recordAnswers({ github, issue, issueState, comments }) {
         [
           '[agent-kanban] answer-received',
           '',
-          `已收到回覆：\`${body}\``
+          `已收到你的回覆：\`${body}\``
         ].join('\n')
       );
       acknowledged.add(comment.id);
@@ -156,7 +254,7 @@ function extractBotDirective(text) {
 
 function hasPushAuthorization(issue) {
   const text = `${issue.title || ''}\n${issue.body || ''}`;
-  return /\/allow-push\b|commit\s*並\s*push|commit\s+and\s+push|上傳\s*git|推送\s*git|git\s*push/i.test(text);
+  return /\/allow-push\b|commit\s*(?:並|and)?\s*push|上傳\s*git|git\s*push/i.test(text);
 }
 
 function hasAgentStatus(comments, status) {
@@ -164,7 +262,22 @@ function hasAgentStatus(comments, status) {
   return comments.some((comment) => pattern.test(String(comment.body || '').trim()));
 }
 
-function isAnswerComment({ body, comment, issueState }) {
+function hasAgentNeedsInputForProject(comments, requestedProject) {
+  return comments.some((comment) => {
+    const body = String(comment.body || '').trim();
+    return body.startsWith('[agent-kanban] needs-input') && body.includes(`\`${requestedProject}\``);
+  });
+}
+
+function hasAgentNeedsInput(comments, text) {
+  const marker = String(text || '').slice(0, 80);
+  return comments.some((comment) => {
+    const body = String(comment.body || '').trim();
+    return body.startsWith('[agent-kanban] needs-input') && (!marker || body.includes(marker));
+  });
+}
+
+function isAnswerComment({ body, issueState }) {
   if (!body || body.startsWith('[agent-kanban]')) return false;
   if (body.startsWith('/answer')) return true;
   if (issueState.status !== 'needs-input') return false;

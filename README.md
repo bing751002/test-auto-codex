@@ -1,124 +1,154 @@
-# agent-kanban
+# agent-kanban-system
 
-個人 multi-agent 開發 kanban — meta-project，**主 session 只規劃、不寫 code**。
+這個專案是給 Codex 使用的「協調者 / issue runner」控制台。目標是讓你在 GitHub issue 描述需求，放在公司電腦上的 runner 會定期讀取 issue，依照指定的本機專案資料夾啟動 Codex 執行工作，並把狀態回覆在同一個 issue。
 
-> Created: 2026-05-12
+## 目前支援的流程
 
-## 為什麼存在
+1. 在控制 repo 開 GitHub issue，套用 `Agent Kanban Request` template。
+2. issue 加上 `agent-kanban` label。
+3. 用 `/bot <runner-id>` 指定哪台電腦處理。
+4. runner 依照 issue 所在 repo 找到對應的本機資料夾。
+5. 如果資料夾不存在，而且設定允許 `cloneIfMissing`，runner 會先 clone repo。
+6. 需要覆蓋預設資料夾時，可用 `/project <project-name>` 指定白名單 project。
+7. runner poll 到 issue 後會回覆：
+   - `[agent-kanban] status: received`
+   - `[agent-kanban] status: running`
+   - `[agent-kanban] status: completed`
+   - `[agent-kanban] status: failed`
+   - `[agent-kanban] needs-input`
+8. 如果 Codex 需要補充資訊，你可以直接在同一個 issue 回覆，runner 下一輪會接續執行。
 
-單一窗口跟 AI 開發、需求丟進去自動派工、狀態下次 session 能續。
+## Issue 指令
 
-不是要重發明 GSD — GSD 是**手排**（每步驟使用者觸發），這裡要**自排**（使用者只丟需求，agent 自己跑 workflow，遇 checkpoint 才停下來問）。
+### 指定處理電腦
 
-## 痛點 → 對應
-
-| 真實痛點 | 怎麼接 |
-|---|---|
-| Context switch 高頻、session 切回來忘記在做什麼 | task 狀態上 disk，下次 session `ls tasks/in-progress/` 直接續 |
-| 主 session 寫 code 後 context 被細節塞滿，orchestrate 能力塌掉 | 主 agent 不寫 code，只切 task / 派工 / 追狀態 |
-| 用 AI 開發要不斷自己派工、追進度 | 你只丟需求，主 agent 自動切 spec-writer / coder / reviewer subagent 並追結果 |
-| **spec 寫完還要手動叫 agent 去執行** | **spec 完成 = trigger，主 agent 自動 spawn coder subagent 接著做** |
-| GSD 每步要使用者手動觸發 | 改成「自排」：主 agent 自己跑 workflow，遇 checkpoint 才停下來問 |
-
-## Mental Model
-
-```
-你 ──> 主 agent (協調者 / orchestrator)
-       │
-       │  Stage 0: 釐清模糊地帶 ← 跟你 Q&A，直到無 ambiguity（人工 checkpoint）
-       │           輸出：tasks/<id>/CLARIFIED.md（澄清過的需求）
-       │
-       │  Stage 1: 派 spec-writer subagent
-       │           輸入：CLARIFIED.md
-       │           輸出：tasks/<id>/SPEC.md（L4 task spec，可執行）
-       │
-       │  Stage 2: 派 coder subagent（自動 trigger）
-       │           輸入：SPEC.md
-       │           輸出：commit / PR
-       │
-       │  Stage 3: 派 reviewer subagent（自動 trigger）
-       │           輸入：PR diff
-       │           輸出：approve / fail → 回 coder 修
-       │
-       ▼
-   結果回主 agent → 回你
+```text
+/bot LAPTOP-2PECR7ML
 ```
 
-### 兩個核心原則
+沒有 `/bot` 時，任何正在 poll 這個 repo 的 runner 都可能接走 issue。若你有兩台電腦都在跑，建議一定要指定。
 
-**1. 消除模糊優先於分派工作**
+### 覆蓋本機專案資料夾
 
-主 agent 的第一職責不是「分派任務」，是「**消除模糊地帶**」。任務分派是消除模糊後的副產品。
+```text
+/project agent-kanban-system
+```
 
-> 對應 vault [[ai-autonomous-dev-plan]] 反模式：「AI 寫 spec 給 AI 執行 → 認知套娃」。
-> 這條只在「模糊地帶」成立。**已澄清的知識計畫 → 拆成可執行工作**是 AI 可以做的事。
-> 紀律：spec-writer 的 input 必須是 CLARIFIED.md，不能是糙需求。
+一般情況不需要寫 `/project`。issue 從哪個 repo 來，runner 會用 `.runner/projects.json` 裡的 `repos` 設定推導本機資料夾。
 
-**2. Autonomous trigger（已澄清後）**
+`/project` 是進階覆蓋用，不是任意路徑，而是 `.runner/projects.json` 裡登記過的 project 名稱。這樣可以避免 issue 誤寫路徑，或讓 runner 跑到未授權的公司資料夾。
 
-Stage 0 過了之後，Stage 1→2→3 自動串接。subagent A 完成 = 主 agent 看到 artifact → 自動 spawn subagent B。你不必每階段手動推進。
+若 issue 指定不存在的 project，runner 會在 issue 回覆 `[agent-kanban] needs-input`，並列出目前可用 project。
 
-### 三條硬規則
+### 允許 commit / push
 
-1. **主 agent 不寫 code**。它只 plan / orchestrate。違反這條 = 主 session context 被細節污染、後續 orchestrate 能力塌掉。
-2. **狀態全部上 disk**。主 session 不擁有工作記憶。task / spec / 進度 → 檔案，下次 session 直接續。
-3. **單一主窗口**。使用者只跟主 agent 對話。不開多個並行 session 操作同 task。
+預設 runner 只允許 Codex 修改工作樹與回報結果，不會要求 Codex commit 或 push。
 
-### Task Schema
+如果你要讓 Codex commit 並 push，需要在 issue 寫明：
 
-沿用 et-omniverse L1-L4 Task Spec（[`docs/AI-GUIDE.md`](../et-omniverse-code/docs/AI-GUIDE.md) 同款結構），不重發明。
+```text
+/allow-push
+```
 
-## 已對齊的決策
+或在需求中明確寫：
 
-| 決策 | 結論 | 日期 |
-|---|---|---|
-| Repo 位置 | 獨立 repo `D:\agent-kanban-system\`（不寄生 et-omniverse、不塞 vault） | 2026-05-12 |
-| 視覺化層 | 砍掉，先純文字 kanban | 2026-05-12 |
-| 主 agent 角色 | 只 planner / orchestrator，不寫 code | 2026-05-12 |
-| Bootstrap 起手 | 主 session 親手寫第一版 spec-writer prompt（避免認知套娃） | 2026-05-12 |
-| Stage 0 必須 | 主 agent 跟使用者 Q&A 澄清，產 CLARIFIED.md 才能進 Stage 1 | 2026-05-12 |
-| spec-writer 紀律 | 只拆「已澄清的知識計畫」成可執行工作；不在模糊地帶寫 spec | 2026-05-12 |
-| 跨 repo 工作模型 | 協調者只讀**結構面**（Glob/Grep/metadata），實作面由 subagent 隔離讀，回報走 artifact 不走 response 文字 | 2026-05-12 |
-| Stage 0 前置驗證 | 使用者描述「現有問題」時，協調者必先 spot-check disk 確認 finding 仍成立，disk 與描述衝突時 trust disk 並回報，不寫 CLARIFIED | 2026-05-12 |
-| coder v1 紀律 | 不自動 commit / 不擴 scope / 跑 acceptance 限自動驗子集 / 跨 disk 動 code 但回報走 IMPL-NOTES.md artifact 不複述 diff | 2026-05-12 |
-| reviewer v1 範圍 | 只驗 SPEC 合規（AC / Invariants / Decisions / Scope / 紅線），不評 code 品質、不評 architecture、不重寫 code、不建議 SPEC 修法（BLOCK + finding 即可）| 2026-05-12 |
-| Task patch 流程 | SPEC 漏 / 需求漂移 / reviewer BLOCK 一律開 follow-up task，原 task 收 done + CLOSING.md，不在原 task 內補 amendment | 2026-05-13 |
+```text
+commit 並 push
+上傳 git
+git push
+```
 
-## 未解的問題
+## Repo / Project 設定
 
-- **半自排 vs 全自排**：checkpoint 切在哪？目前未定
-- **subagent 失敗 fallback**：subagent 跑壞了主 agent 怎麼接？未定
-- **subagent 結果採信機制**：「read artifact」目前籠統，verify checklist 沒寫死
-- **跨 task dependency**：A blocks B 怎麼追？未定
-- **Cross-session resume**：中斷狀態判斷（如 in-progress 只有 CLARIFIED.md 沒 SPEC.md = 跑到一半還是 Stage 0 結束？）
-- **與 et-omniverse GSD 關係**：agent-kanban 是 GSD 下層 / 平行 / 替代？dogfood T-0001 暴露
+實際設定檔放在本機：
 
-## 反模式
+```text
+.runner/projects.json
+```
 
-- ❌ 主 agent 偷偷自己改 code（即使「比較快」）
-- ❌ 用未審 general-purpose subagent 產出核心 agent prompt（bootstrap 套娃）
-- ❌ 把 task 狀態存在 session memory（換 session 就消失）
-- ❌ 重發明 GSD / Kanban schema
+這個檔案被 `.gitignore` 忽略，不會上傳到 git，適合放公司電腦的本機路徑。
 
-## GitHub Issue Runner 試驗
+範例：
 
-這個專案可以用 GitHub issue 當遠端控制面板，讓公司電腦主動 poll issue，不需要外部 SSH 進入公司電腦。
+```json
+{
+  "defaultProject": "agent-kanban-system",
+  "workspaceRoot": "D:\\work",
+  "cloneIfMissing": true,
+  "projects": {
+    "agent-kanban-system": {
+      "path": "D:\\agent-kanban-system"
+    }
+  },
+  "repos": {
+    "bing751002/test-auto-codex": {
+      "project": "agent-kanban-system",
+      "path": "D:\\agent-kanban-system",
+      "cloneIfMissing": false
+    },
+    "company/customer-api": {
+      "project": "customer-api"
+    }
+  }
+}
+```
 
-目前第一版 runner 放在 `tools/issue-runner/`，使用 GitHub CLI 的登入狀態。
+設定意義：
+
+- `repos`：runner 每輪會 poll 的 GitHub repo 清單。
+- `project`：該 repo 預設對應的本機 project 名稱。
+- `path`：明確指定本機資料夾。若省略，會使用 `workspaceRoot + repo 名稱`，例如 `D:\work\customer-api`。
+- `cloneIfMissing`：資料夾不存在時是否允許 runner 執行 `gh repo clone <repo> <path>`。
+- `projects`：手動 `/project` 覆蓋時可使用的白名單。
+
+repo 內也有可提交的範例檔：
+
+```text
+tools/issue-runner/projects.example.json
+```
+
+## 多 repo issue
+
+runner 支援同一次 poll 依序查多個 repo。你可以直接在目標 repo 開 issue，例如 `company/customer-api`，runner 會依 `repos` 設定進到對應的本機資料夾執行。
+
+狀態 key 會使用 `repo#issueNumber`，例如：
+
+```text
+company/customer-api#12
+company/web-admin#12
+```
+
+所以不同 repo 都有 issue `#12` 時不會互相覆蓋。
+
+## Runner 指令
+
+查看狀態：
 
 ```powershell
 node tools/issue-runner/runner.cjs status
-node tools/issue-runner/runner.cjs ensure-label
-node tools/issue-runner/runner.cjs poll
 ```
 
-若要在公司電腦自動輪詢 issue，可安裝 Windows 工作排程：
+建立 label：
+
+```powershell
+node tools/issue-runner/runner.cjs ensure-label
+```
+
+手動 poll 一次：
+
+```powershell
+node tools/issue-runner/runner.cjs poll --exec-mode dry-run
+```
+
+## Windows 排程
+
+安裝隱藏執行的排程：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/issue-runner/install-scheduled-task.ps1 -ExecMode codex -RunnerId LAPTOP-2PECR7ML -ExecutionLimitMinutes 120
 ```
 
-手動觸發一次：
+手動啟動一次：
 
 ```powershell
 Start-ScheduledTask -TaskName AgentKanbanIssueRunner
@@ -130,73 +160,36 @@ Start-ScheduledTask -TaskName AgentKanbanIssueRunner
 powershell -ExecutionPolicy Bypass -File tools/issue-runner/uninstall-scheduled-task.ps1
 ```
 
-每次執行會跑：
+排程會透過 `wscript.exe` 隱藏 PowerShell 視窗，避免每分鐘跳出小黑框。log 會寫到 `.runner/logs/`。
 
-```powershell
-git pull --ff-only
-node tools/issue-runner/runner.cjs poll --exec-mode dry-run
-```
+## 狀態與輸出
 
-排程透過 `wscript.exe` 背景啟動 `run-hidden.vbs`，再由 wrapper 以 hidden PowerShell 執行 `run-once.ps1`，避免每次 poll 跳出黑色 console 視窗。log 會寫到 `.runner/logs/`。
-
-排程保留 `ExecutionLimitMinutes` 是為了避免 Codex 或 git 命令卡死後永遠佔用背景工作。預設 120 分鐘；`run-once.ps1` 另有 `.runner/issue-runner.lock` 防止上一輪還在跑時下一輪重入。
-
-`dry-run` 是預設安全模式：runner 會把 issue 轉成 `.runner/requests/issue-<number>.md`，並在 issue 回覆 completed，但不會真的呼叫 Codex。
-
-要改成真正呼叫 Codex，可重新安裝排程：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File tools/issue-runner/install-scheduled-task.ps1 -ExecMode codex
-```
-
-Codex 模式會執行：
-
-```powershell
-codex exec --cd D:\agent-kanban-system --sandbox workspace-write --ask-for-approval never --output-last-message .runner/runs/issue-<number>-last-message.md -
-```
-
-執行結果會回覆到同一個 GitHub issue。若 Codex 失敗，runner 會留言 `[agent-kanban] status: failed`。
-
-預設設定：
+本機 runner 狀態：
 
 ```text
-repo: remote origin 推導，例如 bing751002/test-auto-codex
-label: agent-kanban
-runner id: 預設為 Windows COMPUTERNAME，可用 -RunnerId 指定
-state: .runner/state.json
+.runner/state.json
 ```
 
-流程：
-
-1. 遠端在 GitHub issue 加上 `agent-kanban` label。
-2. 如果有多台電腦同時跑 runner，在 issue body 指定目標：
-   ```text
-   /bot LAPTOP-2PECR7ML
-   ```
-   沒有 `/bot` 時，任何 runner 都可以接。
-3. 公司電腦執行 `poll`。
-4. 新 issue 會被留言標記 `[agent-kanban] status: received`。
-5. 若 runner 需要使用者補充，可在同一 issue 留 `[agent-kanban] needs-input`。
-6. 使用者在同一 issue 回覆 `/answer ...`，或直接留下一般 comment，下一次 `poll` 會記錄並繼續。
-
-### Git push 授權
-
-runner 預設不允許 Codex commit/push。issue 必須明確包含以下任一種授權，Codex prompt 才會允許 `git add`、`git commit`、`git push`：
+Codex prompt：
 
 ```text
-/allow-push
-commit 並 push
-上傳 git
-git push
+.runner/requests/issue-<number>.md
 ```
 
-建議 issue 寫法：
+Codex 最後回覆：
 
 ```text
-/bot LAPTOP-2PECR7ML
-/allow-push
-
-請新增一個靜態 welcome page，完成後 commit 並 push。
+.runner/runs/issue-<number>-last-message.md
 ```
 
-`.runner/` 是本機狀態，不進 git。
+大型產出檔案建議放：
+
+```text
+artifacts/issue-<number>/
+```
+
+若是不適合進 git 的敏感或本機輸出，放：
+
+```text
+.runner/artifacts/issue-<number>/
+```
