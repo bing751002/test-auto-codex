@@ -1,4 +1,4 @@
-async function pollIssues({ github, repo, label, state }) {
+async function pollIssues({ github, repo, label, state, executor, execute = false }) {
   const nextState = normalizeState(state);
   const issues = await github.listIssues({ repo, label });
 
@@ -26,9 +26,57 @@ async function pollIssues({ github, repo, label, state }) {
     }
 
     await recordAnswers({ github, issue, issueState: nextState.issues[key] });
+    if (execute) {
+      await executeIssue({ github, issue, issueState: nextState.issues[key], executor });
+    }
   }
 
   return { state: nextState };
+}
+
+async function executeIssue({ github, issue, issueState, executor }) {
+  if (!executor) throw new Error('executor is required when execute=true');
+  if (issueState.status !== 'received') return;
+
+  issueState.status = 'running';
+  issueState.startedAt = new Date().toISOString();
+  await github.commentIssue(
+    issue.number,
+    [
+      '[agent-kanban] status: running',
+      '',
+      '公司電腦已開始處理此 issue。'
+    ].join('\n')
+  );
+
+  try {
+    const result = await executor.run(issue);
+    issueState.finishedAt = new Date().toISOString();
+    issueState.lastRun = result;
+    issueState.status = result.ok ? 'completed' : 'failed';
+
+    await github.commentIssue(
+      issue.number,
+      [
+        `[agent-kanban] status: ${issueState.status}`,
+        '',
+        truncate(result.summary || '', 4000)
+      ].join('\n').trim()
+    );
+  } catch (error) {
+    const summary = error.message || String(error);
+    issueState.finishedAt = new Date().toISOString();
+    issueState.status = 'failed';
+    issueState.lastRun = { ok: false, summary };
+    await github.commentIssue(
+      issue.number,
+      [
+        '[agent-kanban] status: failed',
+        '',
+        truncate(summary, 4000)
+      ].join('\n')
+    );
+  }
 }
 
 async function recordAnswers({ github, issue, issueState }) {
@@ -67,6 +115,12 @@ function normalizeState(state) {
     version: 1,
     issues: { ...(state?.issues || {}) }
   };
+}
+
+function truncate(value, maxLength) {
+  const text = String(value);
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 20)}\n...[truncated]`;
 }
 
 module.exports = { pollIssues };

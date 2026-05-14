@@ -4,6 +4,7 @@ const { execFileSync } = require('node:child_process');
 const { pollIssues } = require('./lib/core.cjs');
 const { readState, writeState } = require('./lib/state.cjs');
 const { createGitHubClient, bindRepo } = require('./lib/github.cjs');
+const { createExecutor } = require('./lib/executor.cjs');
 
 const command = process.argv[2] || 'status';
 
@@ -20,6 +21,7 @@ async function main() {
     console.log(`repo: ${config.repo}`);
     console.log(`label: ${config.label}`);
     console.log(`state: ${relative(config.statePath)}`);
+    console.log(`execMode: ${config.execMode}`);
     console.log(`gh: ${authLine()}`);
     return;
   }
@@ -34,9 +36,11 @@ async function main() {
     const state = readState(config.statePath);
     const result = await pollIssues({
       github,
+      executor: createExecutor(config),
       repo: config.repo,
       label: config.label,
-      state
+      state,
+      execute: config.execute
     });
     writeState(config.statePath, result.state);
     console.log(`OK: polled ${config.repo} label:${config.label}`);
@@ -80,7 +84,14 @@ function getConfig() {
   return {
     repo,
     label: getArg('--label') || process.env.ISSUE_RUNNER_LABEL || 'agent-kanban',
-    statePath: path.resolve(getArg('--state') || process.env.ISSUE_RUNNER_STATE || '.runner/state.json')
+    statePath: path.resolve(getArg('--state') || process.env.ISSUE_RUNNER_STATE || '.runner/state.json'),
+    projectRoot: process.cwd(),
+    requestsDir: path.resolve(process.env.ISSUE_RUNNER_REQUESTS_DIR || '.runner/requests'),
+    runsDir: path.resolve(process.env.ISSUE_RUNNER_RUNS_DIR || '.runner/runs'),
+    execute: getFlag('--no-execute') ? false : process.env.ISSUE_RUNNER_EXECUTE !== '0',
+    execMode: getArg('--exec-mode') || process.env.ISSUE_RUNNER_EXEC_MODE || 'dry-run',
+    sandbox: process.env.ISSUE_RUNNER_CODEX_SANDBOX || 'workspace-write',
+    timeoutMs: Number(process.env.ISSUE_RUNNER_TIMEOUT_MS || 30 * 60 * 1000)
   };
 }
 
@@ -88,6 +99,10 @@ function getArg(name) {
   const index = process.argv.indexOf(name);
   if (index === -1) return '';
   return process.argv[index + 1] || '';
+}
+
+function getFlag(name) {
+  return process.argv.includes(name);
 }
 
 function inferRepoFromGit() {

@@ -134,10 +134,26 @@ powershell -ExecutionPolicy Bypass -File tools/issue-runner/uninstall-scheduled-
 
 ```powershell
 git pull --ff-only
-node tools/issue-runner/runner.cjs poll
+node tools/issue-runner/runner.cjs poll --exec-mode dry-run
 ```
 
 log 會寫到 `.runner/logs/`。
+
+`dry-run` 是預設安全模式：runner 會把 issue 轉成 `.runner/requests/issue-<number>.md`，並在 issue 回覆 completed，但不會真的呼叫 Codex。
+
+要改成真正呼叫 Codex，可重新安裝排程：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/issue-runner/install-scheduled-task.ps1 -ExecMode codex
+```
+
+Codex 模式會執行：
+
+```powershell
+codex exec --cd D:\agent-kanban-system --sandbox workspace-write --ask-for-approval never --output-last-message .runner/runs/issue-<number>-last-message.md -
+```
+
+執行結果會回覆到同一個 GitHub issue。若 Codex 失敗，runner 會留言 `[agent-kanban] status: failed`。
 
 預設設定：
 

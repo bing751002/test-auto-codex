@@ -1,6 +1,8 @@
 param(
   [string]$TaskName = 'AgentKanbanIssueRunner',
-  [int]$IntervalMinutes = 1
+  [int]$IntervalMinutes = 1,
+  [ValidateSet('dry-run', 'codex')]
+  [string]$ExecMode = 'dry-run'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,7 +16,7 @@ if (-not (Test-Path $RunScript)) {
 
 $Action = New-ScheduledTaskAction `
   -Execute 'powershell.exe' `
-  -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$RunScript`"" `
+  -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$RunScript`" -ExecMode $ExecMode" `
   -WorkingDirectory $ProjectRoot
 
 $Trigger = New-ScheduledTaskTrigger `
@@ -38,6 +40,6 @@ Register-ScheduledTask `
   -Description 'Poll GitHub issues for agent-kanban requests.' `
   -Force | Out-Null
 
-Write-Host "OK: installed scheduled task $TaskName every $IntervalMinutes minute(s)"
+Write-Host "OK: installed scheduled task $TaskName every $IntervalMinutes minute(s), exec mode: $ExecMode"
 Write-Host "Run now:"
 Write-Host "  Start-ScheduledTask -TaskName $TaskName"

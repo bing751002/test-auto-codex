@@ -84,3 +84,86 @@ test('pollIssues records slash answers and acknowledges them once', async () => 
   assert.equal(posted.length, 1);
   assert.deepEqual(second.state.issues['2'].acknowledgedAnswerCommentIds, [101]);
 });
+
+test('pollIssues executes received issues and reports completion once', async () => {
+  const posted = [];
+  const executed = [];
+  const github = {
+    listIssues: async () => [
+      {
+        number: 3,
+        title: 'Run Codex',
+        body: 'Please inspect the project.',
+        url: 'https://github.com/example/repo/issues/3'
+      }
+    ],
+    listComments: async () => [],
+    commentIssue: async (number, body) => posted.push({ number, body })
+  };
+  const executor = {
+    run: async (issue) => {
+      executed.push(issue);
+      return { ok: true, summary: 'Codex completed dry run.' };
+    }
+  };
+
+  const first = await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    state: { issues: {} },
+    execute: true
+  });
+
+  assert.equal(executed.length, 1);
+  assert.equal(executed[0].number, 3);
+  assert.equal(first.state.issues['3'].status, 'completed');
+  assert.equal(first.state.issues['3'].lastRun.ok, true);
+  assert.match(posted.map((item) => item.body).join('\n'), /\[agent-kanban\] status: running/);
+  assert.match(posted.map((item) => item.body).join('\n'), /\[agent-kanban\] status: completed/);
+
+  await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    state: first.state,
+    execute: true
+  });
+
+  assert.equal(executed.length, 1);
+});
+
+test('pollIssues reports failed execution and stores error summary', async () => {
+  const posted = [];
+  const github = {
+    listIssues: async () => [
+      {
+        number: 4,
+        title: 'Broken run',
+        body: 'Trigger failure.',
+        url: 'https://github.com/example/repo/issues/4'
+      }
+    ],
+    listComments: async () => [],
+    commentIssue: async (number, body) => posted.push({ number, body })
+  };
+  const executor = {
+    run: async () => ({ ok: false, summary: 'Command exited with code 1.' })
+  };
+
+  const result = await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    state: { issues: {} },
+    execute: true
+  });
+
+  assert.equal(result.state.issues['4'].status, 'failed');
+  assert.equal(result.state.issues['4'].lastRun.ok, false);
+  assert.match(posted.map((item) => item.body).join('\n'), /\[agent-kanban\] status: failed/);
+  assert.match(posted.map((item) => item.body).join('\n'), /Command exited with code 1/);
+});

@@ -1,3 +1,7 @@
+param(
+  [string]$ExecMode = 'dry-run'
+)
+
 $ErrorActionPreference = 'Stop'
 
 $ProjectRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
@@ -21,8 +25,8 @@ try {
   Write-Log "git pull --ff-only"
   git pull --ff-only 2>&1 | Tee-Object -FilePath $LogPath -Append
 
-  Write-Log "node tools/issue-runner/runner.cjs poll"
-  node tools/issue-runner/runner.cjs poll 2>&1 | Tee-Object -FilePath $LogPath -Append
+  Write-Log "node tools/issue-runner/runner.cjs poll --exec-mode $ExecMode"
+  node tools/issue-runner/runner.cjs poll --exec-mode $ExecMode 2>&1 | Tee-Object -FilePath $LogPath -Append
 
   Write-Log "issue-runner complete"
 } catch {
