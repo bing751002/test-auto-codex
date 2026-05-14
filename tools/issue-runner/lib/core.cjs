@@ -293,6 +293,7 @@ function createIssueState(issue, runnerId) {
     url: issue.url,
     runnerId: runnerId || '',
     engine: extractEngineDirective(issue.body || ''),
+    mode: extractModeDirective(issue.body || ''),
     allowPush: hasPushAuthorization(issue),
     answers: {},
     acknowledgedAnswerCommentIds: []
@@ -311,6 +312,24 @@ function normalizeEngine(raw) {
   if (!value || value === 'default') return '';
   if (value === 'claude') return 'claude-code';
   if (['codex', 'claude-code', 'dry-run'].includes(value)) return value;
+  return '';
+}
+
+function extractModeDirective(text) {
+  const slash = String(text).match(/^\s*\/mode\s+([A-Za-z一-鿿]+)\s*$/im);
+  if (slash) return normalizeMode(slash[1]);
+  const section = readFormSectionValue(text, 'Task type');
+  return normalizeMode(section);
+}
+
+function normalizeMode(raw) {
+  const value = String(raw || '').trim().toLowerCase();
+  if (!value) return '';
+  // Issue Form dropdown values are like "dev (修改 code)" / "answer (查詢/計算)".
+  // Take the leading token so the display label can carry hints.
+  const head = value.split(/[\s(（]/, 1)[0];
+  if (['dev', 'develop', 'development', '開發', 'code', 'build'].includes(head)) return 'dev';
+  if (['answer', 'query', 'research', 'investigate', 'lookup', '查詢', '計算', '研究'].includes(head)) return 'answer';
   return '';
 }
 
@@ -339,7 +358,7 @@ function reconstructStatusFromComments(issueState, comments) {
   let runningCommentAt = '';
   for (const comment of comments) {
     const body = String(comment.body || '').trim();
-    const match = body.match(/^\[agent-kanban\]\s+(?:status:\s+(running|completed|failed|cancelled)|(needs-input))\b/i);
+    const match = body.match(/^\[agent-kanban\]\s+(?:status:\s+(running|completed|failed|cancelled|timed-out)|(needs-input))\b/i);
     if (!match) continue;
     recovered = (match[1] || match[2]).toLowerCase();
     if (recovered === 'running' && comment.createdAt) runningCommentAt = comment.createdAt;
@@ -363,13 +382,14 @@ function truncate(value, maxLength) {
 }
 
 function statusForResult(result) {
+  if (result.timedOut) return 'timed-out';
   if (!result.ok) return 'failed';
   if (result.needsInput) return 'needs-input';
   return 'completed';
 }
 
 function isTerminalStatus(status) {
-  return ['completed', 'failed', 'cancelled'].includes(String(status || '').toLowerCase());
+  return ['completed', 'failed', 'cancelled', 'timed-out'].includes(String(status || '').toLowerCase());
 }
 
 function issueStateKey(issueNumber, prefix) {

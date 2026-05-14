@@ -706,6 +706,83 @@ test('pollIssues records /engine directive on issueState at creation time', asyn
   assert.equal(byNumber[42], '');
 });
 
+test('pollIssues maps executor timedOut to timed-out status separately from failed', async () => {
+  const posted = [];
+  const github = {
+    listIssues: async () => [
+      { number: 90, title: 'long task', body: '', url: 'u90' }
+    ],
+    listComments: async () => [],
+    commentIssue: async (number, body) => posted.push({ number, body })
+  };
+  const executor = {
+    run: async () => ({
+      ok: false,
+      timedOut: true,
+      summary: '## Final Message\n答案 ...（內容寫到一半 timeout）'
+    })
+  };
+
+  const result = await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    state: { issues: {} },
+    execute: true
+  });
+
+  assert.equal(result.state.issues['90'].status, 'timed-out');
+  const bodies = posted.map((p) => p.body).join('\n');
+  assert.match(bodies, /\[agent-kanban\] status: timed-out/);
+  assert.match(bodies, /Final Message/);
+});
+
+test('pollIssues records /mode directive and Task type form section', async () => {
+  const captured = [];
+  const formBody = [
+    '### Runner',
+    '',
+    'office-pc',
+    '',
+    '### Task type',
+    '',
+    'answer (查詢／計算／研究)'
+  ].join('\n');
+  const github = {
+    listIssues: async () => [
+      { number: 80, title: 'slash mode', body: '/bot office-pc\n/mode answer\n計算多少個', url: 'u80' },
+      { number: 81, title: 'form mode', body: formBody, url: 'u81' },
+      { number: 82, title: 'default mode', body: '/bot office-pc\n做這個', url: 'u82' },
+      { number: 83, title: 'dev explicit', body: '/bot office-pc\n/mode dev\n做開發', url: 'u83' }
+    ],
+    listComments: async () => [],
+    commentIssue: async () => {}
+  };
+  const executor = {
+    run: async (issue, issueState) => {
+      captured.push({ n: issue.number, mode: issueState.mode });
+      return { ok: true, summary: 'done' };
+    }
+  };
+
+  await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    runnerId: 'office-pc',
+    state: { issues: {} },
+    execute: true
+  });
+
+  const byNumber = Object.fromEntries(captured.map((c) => [c.n, c.mode]));
+  assert.equal(byNumber[80], 'answer');
+  assert.equal(byNumber[81], 'answer');
+  assert.equal(byNumber[82], '');
+  assert.equal(byNumber[83], 'dev');
+});
+
 test('pollIssues parses GitHub Issue Form section bodies for runner/engine/push', async () => {
   const captured = [];
   const formBody = [

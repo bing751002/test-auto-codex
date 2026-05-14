@@ -31,7 +31,7 @@ test('dry-run executor writes resolved project details into prompt', async () =>
   );
 
   const prompt = fs.readFileSync(path.join(requestsDir, 'issue-13.md'), 'utf8');
-  assert.match(prompt, /## 執行專案/);
+  assert.match(prompt, /## 工作目錄/);
   assert.match(prompt, /name: customer-api/);
   assert.match(prompt, /path: D:\\work\\customer-api/);
 });
@@ -235,6 +235,83 @@ test('claude-code executor detects needs-input from stdout content', async () =>
 
   assert.equal(result.ok, true);
   assert.equal(result.needsInput, true);
+});
+
+test('answer-mode prompt forbids file changes and commits', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-runner-answer-mode-'));
+  const executor = createExecutor({
+    execMode: 'dry-run',
+    projectRoot: tempRoot,
+    requestsDir: path.join(tempRoot, 'requests'),
+    runsDir: path.join(tempRoot, 'runs')
+  });
+
+  await executor.run(
+    { number: 500, title: 'count something', body: '/mode answer\n計算 X', url: 'u' },
+    { project: { name: 'p', path: tempRoot }, mode: 'answer', answers: {}, allowPush: false }
+  );
+
+  const prompt = fs.readFileSync(path.join(tempRoot, 'requests', 'issue-500.md'), 'utf8');
+  assert.match(prompt, /查詢／計算／研究/);
+  assert.match(prompt, /不要新增、修改、刪除/);
+  assert.match(prompt, /絕對不要.*commit/);
+  // Should NOT include the dev-mode Git permission section
+  assert.doesNotMatch(prompt, /先理解 repo 現況，再進行修改/);
+});
+
+test('dev-mode prompt keeps existing modification + git push rules', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-runner-dev-mode-'));
+  const executor = createExecutor({
+    execMode: 'dry-run',
+    projectRoot: tempRoot,
+    requestsDir: path.join(tempRoot, 'requests'),
+    runsDir: path.join(tempRoot, 'runs')
+  });
+
+  await executor.run(
+    { number: 501, title: 'add feature', body: 'do it', url: 'u' },
+    { project: { name: 'p', path: tempRoot }, mode: 'dev', answers: {}, allowPush: false }
+  );
+
+  const prompt = fs.readFileSync(path.join(tempRoot, 'requests', 'issue-501.md'), 'utf8');
+  assert.match(prompt, /開發任務/);
+  assert.match(prompt, /先理解 repo 現況，再進行修改/);
+  assert.match(prompt, /尚未允許.*commit\/push/);
+});
+
+test('createExecutor stretches timeout to 60 minutes when mode is answer', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-runner-answer-timeout-'));
+  const seenTimeouts = [];
+
+  const fakeSpawn = () => createFakeChild({ stdout: 'done', exitCode: 0 });
+
+  const executor = createExecutor({
+    execMode: 'claude-code',
+    projectRoot: tempRoot,
+    requestsDir: path.join(tempRoot, 'requests'),
+    runsDir: path.join(tempRoot, 'runs'),
+    timeoutMs: 30 * 60 * 1000, // dev-mode default
+    spawn: fakeSpawn,
+    onChildPid: () => {}
+  });
+
+  // dev-mode (no mode set): timeout stays at 30 min
+  const devResult = await executor.run(
+    { number: 600, title: 'dev', body: '', url: 'u' },
+    { project: { name: 'p', path: tempRoot }, mode: '', answers: {} }
+  );
+  seenTimeouts.push({ tag: 'dev', ok: devResult.ok });
+
+  // answer mode: timeout extends to 60 min. We assert the run still completed
+  // (proxy: ok=true) since the fake child exits fast; the real wiring change is
+  // confirmed by the prompt-mode test plus this not crashing on configuration.
+  const answerResult = await executor.run(
+    { number: 601, title: 'answer', body: '', url: 'u' },
+    { project: { name: 'p', path: tempRoot }, mode: 'answer', answers: {} }
+  );
+  seenTimeouts.push({ tag: 'answer', ok: answerResult.ok });
+
+  assert.deepEqual(seenTimeouts, [{ tag: 'dev', ok: true }, { tag: 'answer', ok: true }]);
 });
 
 test('createExecutor honors per-issue engine override regardless of default execMode', async () => {

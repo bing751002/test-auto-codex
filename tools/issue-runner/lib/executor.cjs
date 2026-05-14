@@ -4,24 +4,28 @@ const { spawn } = require('node:child_process');
 
 function createExecutor(config) {
   const defaultMode = config.execMode || 'dry-run';
-  const dry = createDryRunExecutor(config);
-  let codex = null;
-  let claudeCode = null;
 
   return {
     run: async (issue, issueState) => {
+      // Answer-mode tasks frequently need several network/API calls plus
+      // reasoning between them, and the default 30-minute ceiling tends to
+      // clip them just before the final answer is emitted. Stretch the
+      // per-run timeout for answer mode unless the operator already set a
+      // longer one. Re-instantiate per call so the timeout adjusts per issue.
+      const effectiveConfig = isAnswerMode(issueState)
+        ? { ...config, timeoutMs: Math.max(config.timeoutMs || 0, 60 * 60 * 1000) }
+        : config;
+
       const engine = pickEngine(issueState, defaultMode);
-      if (engine === 'codex') {
-        codex = codex || createCodexExecutor(config);
-        return codex.run(issue, issueState);
-      }
-      if (engine === 'claude-code') {
-        claudeCode = claudeCode || createClaudeCodeExecutor(config);
-        return claudeCode.run(issue, issueState);
-      }
-      return dry.run(issue, issueState);
+      if (engine === 'codex') return createCodexExecutor(effectiveConfig).run(issue, issueState);
+      if (engine === 'claude-code') return createClaudeCodeExecutor(effectiveConfig).run(issue, issueState);
+      return createDryRunExecutor(effectiveConfig).run(issue, issueState);
     }
   };
+}
+
+function isAnswerMode(issueState) {
+  return issueState && issueState.mode === 'answer';
 }
 
 function pickEngine(issueState, defaultMode) {
@@ -309,7 +313,9 @@ function writePrompt(requestsDir, issue, issueState = {}, projectRoot = '') {
   fs.mkdirSync(requestsDir, { recursive: true });
   const promptPath = path.join(requestsDir, `issue-${issue.number}.md`);
   const body = issue.body || '';
-  const prompt = [
+  const mode = issueState.mode === 'answer' ? 'answer' : 'dev';
+
+  const header = [
     `# GitHub Issue #${issue.number}: ${issue.title}`,
     '',
     `URL: ${issue.url}`,
@@ -317,16 +323,28 @@ function writePrompt(requestsDir, issue, issueState = {}, projectRoot = '') {
     '## 使用者需求',
     body.trim() || '(issue body is empty)',
     '',
-    '## 執行專案',
+    '## 工作目錄',
     issueState.project
       ? [`- name: ${issueState.project.name}`, `- path: ${issueState.project.path}`].join('\n')
       : [`- name: default`, `- path: ${projectRoot || process.cwd()}`].join('\n'),
     '',
     '## 既有回覆',
-    formatAnswers(issueState.answers),
+    formatAnswers(issueState.answers)
+  ];
+
+  const sections = mode === 'answer' ? answerModeSections() : devModeSections(issueState.allowPush);
+  fs.writeFileSync(promptPath, `${[...header, ...sections].join('\n')}\n`, 'utf8');
+  return promptPath;
+}
+
+function devModeSections(allowPush) {
+  return [
+    '',
+    '## 任務類型',
+    '- 這是「開發任務」：你可以、也預期會修改工作目錄裡的檔案來達成需求。',
     '',
     '## Git 權限',
-    issueState.allowPush
+    allowPush
       ? [
           '- 使用者已允許這次任務 commit 並 push。',
           '- 如果你完成了可提交的修改，請自行執行 `git add`、`git commit`、`git push`。',
@@ -344,9 +362,27 @@ function writePrompt(requestsDir, issue, issueState = {}, projectRoot = '') {
     '- 如果遇到可以自行處理的問題，請自行修正並繼續。',
     '- 只有在缺少必要需求、權限或外部資訊時，才在 issue 回覆需要使用者補充。',
     '- 最後請清楚列出完成內容、驗證方式與任何未完成風險。'
-  ].join('\n');
-  fs.writeFileSync(promptPath, `${prompt}\n`, 'utf8');
-  return promptPath;
+  ];
+}
+
+function answerModeSections() {
+  return [
+    '',
+    '## 任務類型',
+    '- 這是「查詢／計算／研究」任務，不是程式碼修改任務。',
+    '- 交付物是「答案本身」，會直接貼回 GitHub issue comment。',
+    '- 你**不需要**寫程式碼檔案。除非任務明確要求產出特定檔案，否則不要新增、修改、刪除工作目錄裡的任何檔案。',
+    '- 你**可以**使用 shell 工具（curl、grep、jq、wc、python -c、node -e、API 直接呼叫等）來取得或計算答案，但是當作臨時手段，不要把腳本留下來。',
+    '- **暫存檔案一律放在 `/tmp/` 底下**（例如 `/tmp/runner-scratch.json`、`/tmp/runner-scratch.txt`）。不要在工作目錄（含其根層、含 `.runner/` 子目錄、含任何隱藏資料夾）建立新檔案。',
+    '- **絕對不要** git add / commit / push。',
+    '',
+    '## 執行規則',
+    '- 使用繁體中文回覆使用者。',
+    '- 直接調查或計算答案，不要先寫 spec 或拆 task。',
+    '- 如果需求不清楚或缺少必要資訊，回應「需要補充：...」並停止，不要猜測。',
+    '- 最終訊息就是「答案 + 取得方式說明」，會被原文貼到 issue comment。請寫得使用者可以直接用，不要只給 link 或叫使用者自己跑指令。',
+    '- **時間預算**：runner 給你最多 60 分鐘。看到工作可能超過時，先寫出當下可給的答案再繼續細化，不要把全部時間花在最終潤飾才開始輸出。'
+  ];
 }
 
 function formatAnswers(answers = {}) {

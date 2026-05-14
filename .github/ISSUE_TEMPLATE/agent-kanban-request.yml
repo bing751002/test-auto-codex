@@ -51,6 +51,20 @@ body:
     validations:
       required: true
 
+  - type: dropdown
+    id: task_type
+    attributes:
+      label: Task type
+      description: |
+        dev：修改 code 的任務（會寫檔案、可能 commit）。
+        answer：查詢 / 計算 / 研究類任務（直接回答、不寫檔、不 commit）。
+      options:
+        - dev (修改 code)
+        - answer (查詢／計算／研究)
+      default: 0
+    validations:
+      required: true
+
   - type: input
     id: localpath
     attributes:
