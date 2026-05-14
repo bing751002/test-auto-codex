@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { pollIssues } = require('./lib/core.cjs');
+const { pollIssues, heartbeat } = require('./lib/core.cjs');
 const { readState, writeState } = require('./lib/state.cjs');
 const { createGitHubClient, bindRepo } = require('./lib/github.cjs');
 const { createExecutor } = require('./lib/executor.cjs');
@@ -30,6 +30,7 @@ async function main() {
     console.log(`defaultProject: ${config.projectConfig.defaultProject}`);
     console.log(`availableProjects: ${Object.keys(config.projectConfig.projects).sort().join(', ')}`);
     console.log(`execMode: ${config.execMode}`);
+    console.log(`allowedAuthors: ${config.allowedAuthors.length === 0 ? '(any)' : config.allowedAuthors.join(', ')}`);
     console.log(`gh: ${authLine()}`);
     return;
   }
@@ -44,6 +45,7 @@ async function main() {
 
   if (command === 'poll') {
     const state = readState(config.statePath);
+    const saveState = async (nextState) => writeState(config.statePath, nextState);
     const result = await pollConfiguredRepos({
       githubClient,
       executor: createExecutor(config),
@@ -52,10 +54,36 @@ async function main() {
       runnerId: config.runnerId,
       state,
       execute: config.execute,
-      projectConfig: config.projectConfig
+      projectConfig: config.projectConfig,
+      saveState,
+      allowedAuthors: config.allowedAuthors
     });
-    writeState(config.statePath, result.state);
+    await saveState(result.state);
     console.log(`OK: polled ${result.polledRepos.join(', ')} label:${config.label}`);
+    return;
+  }
+
+  if (command === 'heartbeat') {
+    const state = readState(config.statePath);
+    const saveState = async (nextState) => writeState(config.statePath, nextState);
+    const repoPlans = resolveRepoPlans(config.repo, config.projectConfig);
+    const totals = { posted: 0 };
+    for (const repoPlan of repoPlans) {
+      const boundGithub = bindRepo(githubClient, repoPlan.repo);
+      const repoState = filterStateForRepo(state, repoPlan.repo);
+      const result = await heartbeat({
+        github: boundGithub,
+        state: repoState,
+        stalenessMs: config.heartbeatStalenessMs,
+        intervalMs: config.heartbeatIntervalMs,
+        saveState: async (next) => {
+          mergeStateForRepo(state, repoPlan.repo, next);
+          await saveState(state);
+        }
+      });
+      totals.posted += result.posted.length;
+    }
+    console.log(`OK: heartbeat posted ${totals.posted} comment(s)`);
     return;
   }
 
@@ -96,7 +124,9 @@ async function pollConfiguredRepos({
   state,
   execute,
   projectConfig,
-  ensureProject
+  ensureProject,
+  saveState = async () => {},
+  allowedAuthors = []
 }) {
   const repoPlans = resolveRepoPlans(fallbackRepo, projectConfig);
   let nextState = state;
@@ -113,13 +143,33 @@ async function pollConfiguredRepos({
       execute,
       projectConfig: projectConfigForRepo(projectConfig, repoPlan),
       stateKeyPrefix: repoPlan.repo,
-      ensureProject
+      ensureProject,
+      saveState,
+      allowedAuthors
     });
     nextState = result.state;
     polledRepos.push(repoPlan.repo);
   }
 
   return { state: nextState, polledRepos };
+}
+
+function filterStateForRepo(state, repo) {
+  const issues = {};
+  for (const [key, value] of Object.entries(state?.issues || {})) {
+    if (key.startsWith(`${repo}#`) || /^\d+$/.test(key)) {
+      issues[key] = value;
+    }
+  }
+  return { ...state, issues };
+}
+
+function mergeStateForRepo(state, repo, partialState) {
+  for (const [key, value] of Object.entries(partialState?.issues || {})) {
+    if (key.startsWith(`${repo}#`) || /^\d+$/.test(key)) {
+      state.issues[key] = value;
+    }
+  }
 }
 
 function getConfig() {
@@ -143,8 +193,18 @@ function getConfig() {
     execute: getFlag('--no-execute') ? false : process.env.ISSUE_RUNNER_EXECUTE !== '0',
     execMode: getArg('--exec-mode') || process.env.ISSUE_RUNNER_EXEC_MODE || 'dry-run',
     sandbox: process.env.ISSUE_RUNNER_CODEX_SANDBOX || 'workspace-write',
-    timeoutMs: Number(process.env.ISSUE_RUNNER_TIMEOUT_MS || 30 * 60 * 1000)
+    timeoutMs: Number(process.env.ISSUE_RUNNER_TIMEOUT_MS || 30 * 60 * 1000),
+    allowedAuthors: parseAllowedAuthors(getArg('--allowed-authors') || process.env.ISSUE_RUNNER_ALLOWED_AUTHORS || ''),
+    heartbeatStalenessMs: Number(process.env.ISSUE_RUNNER_HEARTBEAT_STALENESS_MS || 5 * 60 * 1000),
+    heartbeatIntervalMs: Number(process.env.ISSUE_RUNNER_HEARTBEAT_INTERVAL_MS || 10 * 60 * 1000)
   };
+}
+
+function parseAllowedAuthors(raw) {
+  return String(raw)
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
 }
 
 function getArg(name) {

@@ -1,6 +1,6 @@
-const test = require('node:test');
+﻿const test = require('node:test');
 const assert = require('node:assert/strict');
-const { pollIssues } = require('../../tools/issue-runner/lib/core.cjs');
+const { pollIssues, heartbeat } = require('../../tools/issue-runner/lib/core.cjs');
 
 test('pollIssues acknowledges new labeled issues once', async () => {
   const posted = [];
@@ -374,4 +374,279 @@ test('pollIssues does not duplicate received comment when issue already has runn
   assert.equal(result.state.issues['10'].status, 'completed');
   assert.equal(posted.some((item) => /\[agent-kanban\] status: received/.test(item.body)), false);
   assert.equal(posted.some((item) => /\[agent-kanban\] status: running/.test(item.body)), true);
+});
+
+test('pollIssues persists state after each issue and before/after executor runs', async () => {
+  const snapshots = [];
+  const github = {
+    listIssues: async () => [
+      { number: 11, title: 'A', url: 'https://github.com/example/repo/issues/11' },
+      { number: 12, title: 'B', url: 'https://github.com/example/repo/issues/12' }
+    ],
+    listComments: async () => [],
+    commentIssue: async () => {}
+  };
+  const executor = {
+    run: async (issue, issueState) => {
+      snapshots.push({ tag: `executor-running-${issue.number}`, status: issueState.status });
+      return { ok: true, summary: 'done' };
+    }
+  };
+
+  await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    state: { issues: {} },
+    execute: true,
+    saveState: async (next) => {
+      snapshots.push({
+        tag: 'saved',
+        keys: Object.keys(next.issues).sort(),
+        statuses: Object.fromEntries(
+          Object.entries(next.issues).map(([k, v]) => [k, v.status])
+        )
+      });
+    }
+  });
+
+  const runningSeenByExecutor = snapshots.find((s) => s.tag === 'executor-running-11');
+  assert.equal(runningSeenByExecutor.status, 'running');
+
+  const persistedBeforeIssue12 = snapshots
+    .filter((s) => s.tag === 'saved')
+    .some((s) => s.keys.includes('11') && !s.keys.includes('12'));
+  assert.equal(persistedBeforeIssue12, true, 'state for issue 11 must be persisted before issue 12 is processed');
+
+  const runningPersisted = snapshots
+    .filter((s) => s.tag === 'saved')
+    .some((s) => s.statuses['11'] === 'running');
+  assert.equal(runningPersisted, true, 'running status must be persisted before executor.run completes');
+});
+
+test('pollIssues continues to next issue when one issue throws', async () => {
+  const posted = [];
+  const executed = [];
+  const github = {
+    listIssues: async () => [
+      { number: 20, title: 'Broken', url: 'https://github.com/example/repo/issues/20' },
+      { number: 21, title: 'OK', url: 'https://github.com/example/repo/issues/21' }
+    ],
+    listComments: async (number) => {
+      if (number === 20) throw new Error('gh api transient failure');
+      return [];
+    },
+    commentIssue: async (number, body) => posted.push({ number, body })
+  };
+  const executor = {
+    run: async (issue) => {
+      executed.push(issue.number);
+      return { ok: true, summary: 'done' };
+    }
+  };
+
+  const result = await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    state: { issues: {} },
+    execute: true
+  });
+
+  assert.deepEqual(executed, [21]);
+  assert.equal(result.errors.length, 1);
+  assert.equal(result.errors[0].issue, 20);
+});
+
+test('pollIssues filters issues by allowedAuthors when configured', async () => {
+  const executed = [];
+  const github = {
+    listIssues: async () => [
+      { number: 30, title: 'Mine', body: '', author: { login: 'bing751002' }, url: 'https://github.com/example/repo/issues/30' },
+      { number: 31, title: 'Stranger', body: '', author: { login: 'random-user' }, url: 'https://github.com/example/repo/issues/31' }
+    ],
+    listComments: async () => [],
+    commentIssue: async () => {}
+  };
+  const executor = {
+    run: async (issue) => {
+      executed.push(issue.number);
+      return { ok: true, summary: 'done' };
+    }
+  };
+
+  const result = await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    state: { issues: {} },
+    execute: true,
+    allowedAuthors: ['bing751002']
+  });
+
+  assert.deepEqual(executed, [30]);
+  assert.equal(result.state.issues['31'], undefined);
+});
+
+test('pollIssues drops legacy unprefixed state after migrating to repo-namespaced key', async () => {
+  const github = {
+    listIssues: async () => [
+      { number: 4, title: 'Legacy', url: 'https://github.com/example/repo/issues/4' }
+    ],
+    listComments: async () => [],
+    commentIssue: async () => {}
+  };
+  const state = {
+    issues: {
+      4: { status: 'completed', title: 'Legacy', allowPush: false }
+    }
+  };
+
+  const result = await pollIssues({
+    github,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    state,
+    stateKeyPrefix: 'example/repo'
+  });
+
+  assert.equal(result.state.issues['4'], undefined);
+  assert.equal(result.state.issues['example/repo#4'].status, 'completed');
+});
+
+test('heartbeat posts still-running comment for stale running issues', async () => {
+  const posted = [];
+  const github = {
+    commentIssue: async (number, body) => posted.push({ number, body })
+  };
+  const now = new Date('2026-05-14T14:00:00Z');
+  const startedAt = new Date(now.getTime() - 12 * 60 * 1000).toISOString();
+  const state = {
+    issues: {
+      'bing751002/test-auto-codex#5': {
+        status: 'running',
+        startedAt
+      }
+    }
+  };
+
+  const result = await heartbeat({
+    github,
+    state,
+    stalenessMs: 5 * 60 * 1000,
+    intervalMs: 10 * 60 * 1000,
+    now: () => now
+  });
+
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].number, 5);
+  assert.match(posted[0].body, /\[agent-kanban\] status: still-running/);
+  assert.match(posted[0].body, /已執行約 12 分鐘/);
+  assert.equal(result.state.issues['bing751002/test-auto-codex#5'].lastHeartbeatAt, now.toISOString());
+});
+
+test('heartbeat does not repeat within intervalMs', async () => {
+  const posted = [];
+  const github = {
+    commentIssue: async (number, body) => posted.push({ number, body })
+  };
+  const now = new Date('2026-05-14T14:00:00Z');
+  const state = {
+    issues: {
+      'r#7': {
+        status: 'running',
+        startedAt: new Date(now.getTime() - 30 * 60 * 1000).toISOString(),
+        lastHeartbeatAt: new Date(now.getTime() - 4 * 60 * 1000).toISOString()
+      }
+    }
+  };
+
+  await heartbeat({
+    github,
+    state,
+    stalenessMs: 5 * 60 * 1000,
+    intervalMs: 10 * 60 * 1000,
+    now: () => now
+  });
+
+  assert.equal(posted.length, 0);
+});
+
+test('heartbeat only posts for matching repo prefix when configured', async () => {
+  const posted = [];
+  const github = {
+    commentIssue: async (number, body) => posted.push({ number, body })
+  };
+  const now = new Date('2026-05-14T14:00:00Z');
+  const startedAt = new Date(now.getTime() - 20 * 60 * 1000).toISOString();
+  const state = {
+    issues: {
+      'owner/a#1': { status: 'running', startedAt },
+      'owner/b#2': { status: 'running', startedAt }
+    }
+  };
+
+  await heartbeat({
+    github,
+    state,
+    stateKeyPrefix: 'owner/b',
+    stalenessMs: 5 * 60 * 1000,
+    intervalMs: 10 * 60 * 1000,
+    now: () => now
+  });
+
+  assert.deepEqual(posted.map((item) => item.number), [2]);
+});
+
+test('pollIssues recovers status from GitHub comments when local state is lost', async () => {
+  const executed = [];
+  const posted = [];
+  const github = {
+    listIssues: async () => [
+      { number: 5, title: 'Stuck running', body: 'do thing', url: 'https://github.com/example/repo/issues/5' }
+    ],
+    listComments: async () => [
+      { id: 9001, body: '[agent-kanban] status: received', author: { login: 'bot' }, createdAt: '2026-05-14T13:00:00Z' },
+      { id: 9002, body: '[agent-kanban] status: running\n\n開始執行此 issue。', author: { login: 'bot' }, createdAt: '2026-05-14T13:05:00Z' }
+    ],
+    commentIssue: async (number, body) => posted.push({ number, body })
+  };
+  const executor = {
+    run: async (issue) => { executed.push(issue.number); return { ok: true, summary: 'done' }; }
+  };
+
+  const result = await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    state: { issues: {} },
+    execute: true
+  });
+
+  assert.deepEqual(executed, []);
+  assert.equal(result.state.issues['5'].status, 'running');
+  assert.equal(result.state.issues['5'].recoveredFromComments, true);
+  assert.equal(posted.some((item) => /\[agent-kanban\] status: running/.test(item.body)), false);
+});
+
+test('heartbeat skips non-running issues', async () => {
+  const posted = [];
+  const github = {
+    commentIssue: async (number, body) => posted.push({ number, body })
+  };
+  const now = new Date('2026-05-14T14:00:00Z');
+  const state = {
+    issues: {
+      'r#8': { status: 'completed', startedAt: '2026-05-14T13:00:00Z' },
+      'r#9': { status: 'received' }
+    }
+  };
+
+  await heartbeat({ github, state, now: () => now });
+
+  assert.equal(posted.length, 0);
 });

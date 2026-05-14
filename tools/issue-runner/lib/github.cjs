@@ -13,7 +13,7 @@ function createGitHubClient() {
         '--state',
         'open',
         '--json',
-        'number,title,body,url'
+        'number,title,body,url,author'
       ]);
       return JSON.parse(output || '[]');
     },

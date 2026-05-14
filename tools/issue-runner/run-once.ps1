@@ -30,7 +30,12 @@ try {
     $lock = Get-Item $LockPath
     $age = (Get-Date) - $lock.LastWriteTime
     if ($age.TotalMinutes -lt $LockMaxAgeMinutes) {
-      Write-Log "another runner appears active; lock age $([Math]::Round($age.TotalMinutes, 2)) minute(s), skipping"
+      Write-Log "another runner appears active; lock age $([Math]::Round($age.TotalMinutes, 2)) minute(s), posting heartbeat"
+      $heartbeatArgs = @('tools/issue-runner/runner.cjs', 'heartbeat')
+      if ($RunnerId) {
+        $heartbeatArgs += @('--runner-id', $RunnerId)
+      }
+      & node @heartbeatArgs 2>&1 | Tee-Object -FilePath $LogPath -Append
       exit 0
     }
 
