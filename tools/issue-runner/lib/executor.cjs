@@ -59,7 +59,8 @@ function createCodexExecutor(config) {
           input: fs.readFileSync(promptPath, 'utf8'),
           encoding: 'utf8',
           cwd: config.projectRoot,
-          timeout: config.timeoutMs
+          timeout: config.timeoutMs,
+          shell: process.platform === 'win32'
         }
       );
 
