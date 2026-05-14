@@ -138,8 +138,7 @@ function isAnswerComment({ body, comment, issueState }) {
   if (!body || body.startsWith('[agent-kanban]')) return false;
   if (body.startsWith('/answer')) return true;
   if (issueState.status !== 'needs-input') return false;
-  if (!issueState.finishedAt || !comment.createdAt) return true;
-  return new Date(comment.createdAt).getTime() > new Date(issueState.finishedAt).getTime();
+  return true;
 }
 
 module.exports = { pollIssues };
