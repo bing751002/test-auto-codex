@@ -358,11 +358,16 @@ function formatAnswers(answers = {}) {
 }
 
 function codexCommand() {
-  return process.platform === 'win32' ? 'codex.cmd' : 'codex';
+  // wrapWindowsCmd routes through cmd.exe, which resolves PATHEXT
+  // (.exe/.cmd/.bat). Returning a bare name lets users install either
+  // the npm shim (codex.cmd) or a standalone binary (codex.exe).
+  return 'codex';
 }
 
 function claudeCodeCommand() {
-  return process.platform === 'win32' ? 'claude.cmd' : 'claude';
+  // Same PATHEXT story as codex. Claude Code ships as claude.exe by
+  // default; the npm wrapper installs claude.cmd. Either resolves.
+  return 'claude';
 }
 
 function formatClaudeCodeSummary({ ok, stdout, stderr, error, timedOut }) {
