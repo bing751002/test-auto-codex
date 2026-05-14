@@ -400,14 +400,16 @@ function extractBotDirective(text) {
 
 function hasPushAuthorization(issue) {
   const text = `${issue.title || ''}\n${issue.body || ''}`;
-  // Checkbox form output renders as "- [x] ..." for checked, "- [ ] ..." for
-  // unchecked, so a literal /allow-push appearing only after [x] is the
-  // expected dropdown/checkbox signal.
-  if (/-\s*\[x\][^\r\n]*\/allow-push\b/i.test(text)) return true;
-  if (/-\s*\[x\][^\r\n]*(?:允許|allow)[^\r\n]*push/i.test(text)) return true;
-  // Slash directive form (typed by user, not GitHub Form):
+  // If the body contains a /allow-push checkbox (from the Issue Form), trust
+  // the checkbox state and ignore other heuristics: the unchecked option text
+  // itself reads "commit 並 push" and would false-positive on the legacy
+  // natural-language regex below.
+  if (/-\s*\[[\sx]\][^\r\n]*\/allow-push\b/i.test(text)) {
+    return /-\s*\[x\][^\r\n]*\/allow-push\b/i.test(text);
+  }
+  // Slash directive on its own line (typed by user, not via Issue Form).
   if (/^\s*\/allow-push\b/im.test(text)) return true;
-  // Legacy natural-language phrasings supported since v1:
+  // Legacy natural-language phrasings supported since v1.
   return /commit\s*(?:並|and)?\s*push|上傳\s*git|git\s*push/i.test(text);
 }
 

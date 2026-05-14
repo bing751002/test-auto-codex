@@ -331,6 +331,43 @@ test('pollIssues passes allowPush to executor when issue explicitly authorizes g
   assert.deepEqual(seen, [true]);
 });
 
+test('pollIssues does not allow push from unchecked issue form checkbox text', async () => {
+  const seen = [];
+  const github = {
+    listIssues: async () => [
+      {
+        number: 91,
+        title: 'Unchecked push',
+        body: [
+          '### Git push',
+          '',
+          '- [ ] /allow-push - 完成後允許 runner commit 並 push'
+        ].join('\n'),
+        url: 'https://github.com/example/repo/issues/91'
+      }
+    ],
+    listComments: async () => [],
+    commentIssue: async () => {}
+  };
+  const executor = {
+    run: async (_issue, issueState) => {
+      seen.push(issueState.allowPush);
+      return { ok: true, summary: 'done' };
+    }
+  };
+
+  await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    state: { issues: {} },
+    execute: true
+  });
+
+  assert.deepEqual(seen, [false]);
+});
+
 test('pollIssues does not duplicate received comment when issue already has runner receipt', async () => {
   const posted = [];
   const executed = [];
