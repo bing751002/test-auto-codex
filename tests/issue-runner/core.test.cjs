@@ -135,6 +135,187 @@ test('pollIssues executes received issues and reports completion once', async ()
   assert.equal(executed.length, 1);
 });
 
+test('pollIssues reopens completed issues when the user adds a follow-up comment', async () => {
+  const posted = [];
+  const executed = [];
+  const github = {
+    listIssues: async () => [
+      {
+        number: 13,
+        title: 'Follow up after answer',
+        body: '請先回答一次。',
+        url: 'https://github.com/example/repo/issues/13'
+      }
+    ],
+    listComments: async () => [
+      {
+        id: 1301,
+        body: '[agent-kanban] status: completed\n\n第一次回答完成。',
+        author: { login: 'github-actions[bot]' },
+        createdAt: '2026-05-14T00:10:00Z'
+      },
+      {
+        id: 1302,
+        body: '我補充追問：請再說明第二點。',
+        author: { login: 'bing751002' },
+        createdAt: '2026-05-14T00:15:00Z'
+      }
+    ],
+    commentIssue: async (number, body) => posted.push({ number, body })
+  };
+  const executor = {
+    run: async (_issue, issueState) => {
+      executed.push({
+        status: issueState.status,
+        followUp: issueState.answers['1302']?.body
+      });
+      return { ok: true, summary: 'Follow-up answered.' };
+    }
+  };
+  const state = {
+    issues: {
+      13: {
+        status: 'completed',
+        finishedAt: '2026-05-14T00:10:00Z',
+        answers: {},
+        acknowledgedAnswerCommentIds: []
+      }
+    }
+  };
+
+  const result = await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    state,
+    execute: true
+  });
+
+  assert.deepEqual(executed, [
+    {
+      status: 'running',
+      followUp: '我補充追問：請再說明第二點。'
+    }
+  ]);
+  assert.equal(result.state.issues['13'].status, 'completed');
+  assert.equal(result.state.issues['13'].answers['1302'].body, '我補充追問：請再說明第二點。');
+  assert.match(posted.map((item) => item.body).join('\n'), /\[agent-kanban\] answer-received/);
+  assert.match(posted.map((item) => item.body).join('\n'), /Follow-up answered/);
+});
+
+test('pollIssues only records follow-up comments created after the completed run', async () => {
+  const executed = [];
+  const github = {
+    listIssues: async () => [
+      {
+        number: 14,
+        title: 'Follow up with old chatter',
+        body: '請先回答一次。',
+        url: 'https://github.com/example/repo/issues/14'
+      }
+    ],
+    listComments: async () => [
+      {
+        id: 1401,
+        body: '這是完成前的補充，不應在追問時重送。',
+        author: { login: 'bing751002' },
+        createdAt: '2026-05-14T00:05:00Z'
+      },
+      {
+        id: 1402,
+        body: '[agent-kanban] status: completed\n\n第一次回答完成。',
+        author: { login: 'github-actions[bot]' },
+        createdAt: '2026-05-14T00:10:00Z'
+      },
+      {
+        id: 1403,
+        body: '完成後的新追問。',
+        author: { login: 'bing751002' },
+        createdAt: '2026-05-14T00:15:00Z'
+      }
+    ],
+    commentIssue: async () => {}
+  };
+  const executor = {
+    run: async (_issue, issueState) => {
+      executed.push(Object.keys(issueState.answers).sort());
+      return { ok: true, summary: 'Follow-up answered.' };
+    }
+  };
+
+  const result = await pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    state: {
+      issues: {
+        14: {
+          status: 'completed',
+          finishedAt: '2026-05-14T00:10:00Z',
+          answers: {},
+          acknowledgedAnswerCommentIds: []
+        }
+      }
+    },
+    execute: true
+  });
+
+  assert.deepEqual(executed, [['1403']]);
+  assert.equal(result.state.issues['14'].answers['1401'], undefined);
+  assert.equal(result.state.issues['14'].answers['1403'].body, '完成後的新追問。');
+});
+
+test('pollIssues executes multiple received issues concurrently when worker limit allows it', async () => {
+  const posted = [];
+  const started = [];
+  let releaseFirst;
+  let releaseSecond;
+  let resolveBothStarted;
+  const firstDone = new Promise((resolve) => { releaseFirst = resolve; });
+  const secondDone = new Promise((resolve) => { releaseSecond = resolve; });
+  const bothStarted = new Promise((resolve) => { resolveBothStarted = resolve; });
+  const github = {
+    listIssues: async () => [
+      { number: 301, title: 'Slow A', body: 'Build A.', url: 'u301' },
+      { number: 302, title: 'Slow B', body: 'Build B.', url: 'u302' }
+    ],
+    listComments: async () => [],
+    commentIssue: async (number, body) => posted.push({ number, body })
+  };
+  const executor = {
+    run: async (issue) => {
+      started.push(issue.number);
+      if (started.length === 2) resolveBothStarted();
+      if (issue.number === 301) await firstDone;
+      if (issue.number === 302) await secondDone;
+      return { ok: true, summary: `done ${issue.number}` };
+    }
+  };
+
+  const pollPromise = pollIssues({
+    github,
+    executor,
+    repo: 'example/repo',
+    label: 'agent-kanban',
+    state: { issues: {} },
+    execute: true,
+    maxConcurrentIssues: 2
+  });
+
+  await waitForSignal(bothStarted, 2000, 'both issue executors should start before either one completes');
+  assert.deepEqual(started.sort(), [301, 302]);
+  assert.equal(posted.filter((item) => /\[agent-kanban\] status: running/.test(item.body)).length, 2);
+
+  releaseFirst();
+  releaseSecond();
+
+  const result = await pollPromise;
+  assert.equal(result.state.issues['301'].status, 'completed');
+  assert.equal(result.state.issues['302'].status, 'completed');
+});
+
 test('pollIssues reports failed execution and stores error summary', async () => {
   const posted = [];
   const github = {
@@ -554,7 +735,7 @@ test('pollIssues drops legacy unprefixed state after migrating to repo-namespace
   assert.equal(result.state.issues['example/repo#4'].status, 'completed');
 });
 
-test('pollIssues skips comment fetch for terminal local state', async () => {
+test('pollIssues keeps terminal local state idle when there is no user follow-up comment', async () => {
   let listCommentsCalled = false;
   const github = {
     listIssues: async () => [
@@ -562,7 +743,14 @@ test('pollIssues skips comment fetch for terminal local state', async () => {
     ],
     listComments: async () => {
       listCommentsCalled = true;
-      return [];
+      return [
+        {
+          id: 4101,
+          body: '[agent-kanban] status: completed\n\ndone',
+          author: { login: 'github-actions[bot]' },
+          createdAt: '2026-05-14T00:00:00Z'
+        }
+      ];
     },
     commentIssue: async () => {}
   };
@@ -585,7 +773,7 @@ test('pollIssues skips comment fetch for terminal local state', async () => {
     }
   });
 
-  assert.equal(listCommentsCalled, false);
+  assert.equal(listCommentsCalled, true);
   assert.equal(result.state.issues['example/repo#41'].status, 'completed');
 });
 
@@ -978,3 +1166,15 @@ test('heartbeat skips non-running issues', async () => {
 
   assert.equal(posted.length, 0);
 });
+
+async function waitForSignal(signal, timeoutMs, message) {
+  let timeoutHandle;
+  const timeout = new Promise((_, reject) => {
+    timeoutHandle = setTimeout(() => reject(new assert.AssertionError({ message })), timeoutMs);
+  });
+  try {
+    await Promise.race([signal, timeout]);
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}

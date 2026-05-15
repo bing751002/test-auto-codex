@@ -12,12 +12,14 @@ async function pollIssues({
   stateKeyPrefix = '',
   ensureProject = (project) => ensureProjectDirectory({ project }),
   saveState = async () => {},
-  allowedAuthors = []
+  allowedAuthors = [],
+  maxConcurrentIssues = 1
 }) {
   const nextState = normalizeState(state);
   const issues = await github.listIssues({ repo, label });
-  const persist = () => saveState(nextState);
+  const persist = createQueuedPersist(saveState, nextState);
   const errors = [];
+  const issueWorkers = [];
 
   for (const issue of issues) {
     if (!isAssignedToRunner(issue, runnerId)) continue;
@@ -26,6 +28,10 @@ async function pollIssues({
       continue;
     }
 
+    issueWorkers.push(issue);
+  }
+
+  await runWithConcurrency(issueWorkers, normalizeWorkerLimit(maxConcurrentIssues), async (issue) => {
     try {
       await processIssue({
         github,
@@ -44,7 +50,7 @@ async function pollIssues({
       console.error(`error processing issue #${issue.number}: ${error.message || String(error)}`);
       await persist();
     }
-  }
+  });
 
   return { state: nextState, errors };
 }
@@ -70,11 +76,18 @@ async function processIssue({
     await persist();
   }
 
-  if (state.issues[key] && isTerminalStatus(state.issues[key].status)) {
-    return;
+  let issueState = state.issues[key];
+  let comments = null;
+  if (issueState && isTerminalStatus(issueState.status)) {
+    comments = await github.listComments(issue.number);
+    if (!hasUnprocessedFollowUpComment(issueState, comments)) {
+      return;
+    }
+    issueState.status = 'needs-input';
+    await persist();
   }
 
-  const comments = await github.listComments(issue.number);
+  if (!comments) comments = await github.listComments(issue.number);
   const projectResult = projectConfig ? resolveIssueProject(issue, projectConfig) : null;
 
   if (!state.issues[key]) {
@@ -94,7 +107,7 @@ async function processIssue({
     }
   }
 
-  const issueState = state.issues[key];
+  issueState = state.issues[key];
 
   if (projectResult && !projectResult.ok) {
     await markUnknownProject({ github, issue, issueState, comments, projectResult });
@@ -276,7 +289,7 @@ async function recordAnswers({ github, issue, issueState, comments }) {
 
   for (const comment of comments) {
     const body = String(comment.body || '').trim();
-    if (!isAnswerComment({ body, issueState })) continue;
+    if (!isAnswerComment({ body, comment, issueState })) continue;
 
     issueState.answers[String(comment.id)] = {
       body,
@@ -385,6 +398,48 @@ function normalizeState(state) {
   return { version: 1, issues: { ...(state?.issues || {}) } };
 }
 
+function createQueuedPersist(saveState, state) {
+  let queue = Promise.resolve();
+  return () => {
+    const snapshot = cloneState(state);
+    queue = queue.then(
+      () => saveState(snapshot),
+      () => saveState(snapshot)
+    );
+    return queue;
+  };
+}
+
+async function runWithConcurrency(items, limit, worker) {
+  if (items.length === 0) return;
+  if (limit <= 1) {
+    for (const item of items) {
+      await worker(item);
+    }
+    return;
+  }
+
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex];
+      nextIndex += 1;
+      await worker(item);
+    }
+  });
+  await Promise.all(workers);
+}
+
+function normalizeWorkerLimit(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) return 1;
+  return Math.floor(parsed);
+}
+
+function cloneState(state) {
+  return JSON.parse(JSON.stringify(state));
+}
+
 function truncate(value, maxLength) {
   const text = String(value);
   if (text.length <= maxLength) return text;
@@ -400,6 +455,22 @@ function statusForResult(result) {
 
 function isTerminalStatus(status) {
   return ['completed', 'failed', 'cancelled', 'timed-out'].includes(String(status || '').toLowerCase());
+}
+
+function hasUnprocessedFollowUpComment(issueState, comments) {
+  const answers = issueState.answers || {};
+  const finishedAt = issueState.finishedAt ? Date.parse(issueState.finishedAt) : 0;
+
+  return comments.some((comment) => {
+    const body = String(comment.body || '').trim();
+    if (!body || body.startsWith('[agent-kanban]')) return false;
+    if (Object.prototype.hasOwnProperty.call(answers, String(comment.id))) return false;
+    if (!finishedAt) return true;
+
+    const createdAt = comment.createdAt ? Date.parse(comment.createdAt) : 0;
+    if (!createdAt || Number.isNaN(createdAt)) return true;
+    return createdAt > finishedAt;
+  });
 }
 
 function issueStateKey(issueNumber, prefix) {
@@ -463,11 +534,20 @@ function hasAgentNeedsInput(comments, text) {
   });
 }
 
-function isAnswerComment({ body, issueState }) {
+function isAnswerComment({ body, comment, issueState }) {
   if (!body || body.startsWith('[agent-kanban]')) return false;
   if (body.startsWith('/answer')) return true;
   if (issueState.status !== 'needs-input') return false;
+  if (issueState.finishedAt && !isCommentAfter(comment, issueState.finishedAt)) return false;
   return true;
+}
+
+function isCommentAfter(comment, timestamp) {
+  const baseline = Date.parse(timestamp);
+  if (!baseline || Number.isNaN(baseline)) return true;
+  const createdAt = comment?.createdAt ? Date.parse(comment.createdAt) : 0;
+  if (!createdAt || Number.isNaN(createdAt)) return true;
+  return createdAt > baseline;
 }
 
 function isAllowedAuthor(issue, allowedAuthors) {
